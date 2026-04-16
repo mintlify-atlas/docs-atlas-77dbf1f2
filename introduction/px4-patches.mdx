@@ -1,0 +1,179 @@
+---
+title: "PX4 patches on NuttX"
+description: "What PX4 adds to upstream Apache NuttX: board support for Pixhawk and STM32/i.MX RT/Kinetis hardware, CI workflows, and autopilot Kconfig defaults."
+---
+
+PX4 maintains a fork of Apache NuttX at [github.com/PX4/NuttX](https://github.com/PX4/NuttX). The fork tracks the upstream Apache NuttX project closely and contributes non-PX4-specific improvements back upstream. On top of that shared foundation, PX4's fork adds board support packages (BSPs) for the MCU families used in Pixhawk-series flight controllers, a set of GitHub Actions CI workflows, and Kconfig configuration defaults tuned for autopilot workloads.
+
+This page documents what is present in the PX4 fork that is not part of the upstream NuttX tree.
+
+## CI workflows
+
+The `.github/workflows/` directory contains five GitHub Actions workflow files that run on every pull request and push to `master` or release branches:
+
+| Workflow file | Purpose |
+|---|---|
+| `build.yml` | Compiles NuttX for a matrix of board targets to catch build regressions. Runs on `pull_request` and pushes to `master` and `releases/*`. |
+| `check.yml` | Runs static analysis and Kconfig consistency checks. |
+| `lint.yml` | Enforces the NuttX C coding standard using the `nxstyle` tool. |
+| `doc.yml` | Builds the Sphinx documentation to verify it renders without errors. |
+| `docker_linux.yml` | Builds and pushes the Docker image used as the CI build environment. |
+
+The `dependabot.yml` file configures Dependabot to keep GitHub Actions dependencies up to date. The `.github/linters/` and `.github/actions/` directories contain supporting configuration and composite actions used by the workflows above.
+
+<Info>
+  Pull requests to the PX4 NuttX fork must pass all five workflow checks before merging. Style errors caught by `lint.yml` must be corrected even if the contributor did not introduce them — each PR is expected to leave the modified files compliant with the NuttX C coding standard.
+</Info>
+
+## Board support packages
+
+Board support packages live under `boards/<arch>/<chip>/<board>/`. The directories below are present in the PX4 fork and provide the startup code, linker scripts, pin multiplexing, clock configuration, and default Kconfig fragments for each target.
+
+<Tabs>
+  <Tab title="STM32 (F1–F4)">
+    The `boards/arm/stm32/` directory contains support for a wide range of STM32F1, STM32F2, STM32F3, and STM32F4 targets. Boards present in the PX4 fork include:
+
+    | Board | Notes |
+    |---|---|
+    | `stm32f4discovery` | STMicro STM32F4DISCOVERY evaluation board |
+    | `stm32f429i-disco` | STMicro STM32F429I-DISCO |
+    | `stm32f411-minimum` | Minimal STM32F411 breakout |
+    | `stm32f411e-disco` | STMicro STM32F411E-DISCO |
+    | `nucleo-f429zi` | ST Nucleo-144 with STM32F429ZI |
+    | `nucleo-f446re` | ST Nucleo-64 with STM32F446RE |
+    | `nucleo-f412zg` | ST Nucleo-144 with STM32F412ZG |
+    | `nucleo-f410rb` | ST Nucleo-64 with STM32F410RB |
+    | `nucleo-f4x1re` | ST Nucleo-64 STM32F401RE / STM32F411RE |
+    | `nucleo-f207zg` | ST Nucleo-144 with STM32F207ZG |
+    | `nucleo-f103rb` | ST Nucleo-64 with STM32F103RB |
+    | `nucleo-f302r8` | ST Nucleo-64 with STM32F302R8 |
+    | `nucleo-f303re` | ST Nucleo-64 with STM32F303RE |
+    | `nucleo-f303ze` | ST Nucleo-144 with STM32F303ZE |
+    | `nucleo-f334r8` | ST Nucleo-64 with STM32F334R8 |
+    | `omnibusf4` | Omnibus F4 flight controller (STM32F405) |
+    | `mikroe-stm32f4` | MikroElektronika STM32F4 board |
+    | `olimex-stm32-e407` | Olimex STM32-E407 (STM32F407) |
+    | `olimex-stm32-h405` | Olimex STM32-H405 |
+    | `olimex-stm32-h407` | Olimex STM32-H407 |
+    | `stm3240g-eval` | STMicro STM3240G-EVAL |
+    | `stm3220g-eval` | STMicro STM3220G-EVAL |
+    | `stm32f334-disco` | STMicro STM32F334-DISCOVERY |
+    | `stm32f3discovery` | STMicro STM32F3DISCOVERY |
+
+    See `/platforms/stm32` for configuration and build details.
+  </Tab>
+
+  <Tab title="STM32F7">
+    The `boards/arm/stm32f7/` directory contains support for STM32F7-series targets:
+
+    | Board | Notes |
+    |---|---|
+    | `nucleo-144` | ST Nucleo-144 board (STM32F7xx) |
+    | `stm32f746g-disco` | STMicro STM32F746G-DISCO |
+    | `stm32f746-ws` | STM32F746 web server demo |
+    | `stm32f769i-disco` | STMicro STM32F769I-DISCO |
+    | `steval-eth001v1` | STMicro STEVAL-ETH001V1 |
+
+    See `/platforms/stm32` for configuration and build details.
+  </Tab>
+
+  <Tab title="STM32H7">
+    The `boards/arm/stm32h7/` directory contains support for STM32H7-series targets used in high-performance Pixhawk variants:
+
+    | Board | Notes |
+    |---|---|
+    | `nucleo-h743zi` | ST Nucleo-144 with STM32H743ZI |
+    | `nucleo-h743zi2` | ST Nucleo-144 with STM32H743ZI (rev. 2 PCB) |
+    | `stm32h747i-disco` | STMicro STM32H747I-DISCO |
+
+    See `/platforms/stm32` for configuration and build details.
+  </Tab>
+
+  <Tab title="i.MX RT">
+    The `boards/arm/imxrt/` directory contains support for NXP i.MX RT crossover MCUs:
+
+    | Board | Notes |
+    |---|---|
+    | `imxrt1020-evk` | NXP IMXRT1020-EVK evaluation board |
+    | `imxrt1050-evk` | NXP IMXRT1050-EVK evaluation board |
+    | `imxrt1060-evk` | NXP IMXRT1060-EVK evaluation board |
+    | `imxrt1064-evk` | NXP IMXRT1064-EVK evaluation board |
+    | `imxrt1170-evk` | NXP IMXRT1170-EVK evaluation board |
+    | `teensy-4.x` | PJRC Teensy 4.0 / 4.1 (IMXRT1062) |
+
+    See `/platforms/imxrt` for configuration and build details.
+  </Tab>
+
+  <Tab title="Kinetis">
+    The `boards/arm/kinetis/` directory contains support for NXP Kinetis (K-series) targets:
+
+    | Board | Notes |
+    |---|---|
+    | `freedom-k28f` | NXP FRDM-K28F Freedom board |
+    | `freedom-k64f` | NXP FRDM-K64F Freedom board |
+    | `freedom-k66f` | NXP FRDM-K66F Freedom board |
+    | `kwikstik-k40` | Freescale KWIKSTIK-K40 |
+    | `teensy-3.x` | PJRC Teensy 3.x (MK20DX256) |
+    | `twr-k60n512` | Freescale TWR-K60N512 Tower module |
+    | `twr-k64f120m` | Freescale TWR-K64F120M Tower module |
+
+    See `/platforms/kinetis` for configuration and build details.
+  </Tab>
+</Tabs>
+
+## Board support package structure
+
+Each board directory follows the standard NuttX layout:
+
+```
+boards/arm/<chip>/<board>/
+├── configs/
+│   └── <config-name>/
+│       ├── defconfig        # Compressed Kconfig configuration
+│       └── Make.defs        # Toolchain and linker settings (optional)
+├── scripts/
+│   ├── Make.defs            # Shared toolchain settings for the board
+│   └── <board>.ld           # Linker script
+├── src/
+│   ├── Makefile
+│   ├── <board>_boot.c       # Early board initialisation
+│   ├── <board>_bringup.c    # Driver and peripheral initialisation
+│   └── <board>_userleds.c   # LED driver (where present)
+└── README.txt               # Board-specific notes
+```
+
+To instantiate a configuration, use:
+
+```bash
+tools/configure.sh <board>:<config-name>
+make olddefconfig
+```
+
+## PX4-specific Kconfig options
+
+PX4 board configurations commonly set the following Kconfig options that differ from upstream NuttX defaults:
+
+- **`CONFIG_SCHED_HPWORK`** and **`CONFIG_SCHED_LPWORK`** — high- and low-priority work queues required by the PX4 middleware layer.
+- **`CONFIG_BOARDCTL`** and related `CONFIG_BOARDCTL_*` options — board control interface used by the PX4 startup sequence.
+- **`CONFIG_FS_PROCFS`** — procfs enabled for runtime diagnostics and parameter access.
+- **`CONFIG_SERIAL_TERMIOS`** — TERMIOS support required by MAVLink serial transports.
+- **`CONFIG_USBDEV`** and **`CONFIG_CDCACM`** — USB CDC/ACM serial used for USB console and MAVLink.
+
+<Tip>
+  When porting NuttX to a new Pixhawk board, start from the nearest existing board's `defconfig` and run `make menuconfig` to adjust peripheral assignments. Use `make savedefconfig` to write the resulting compressed `defconfig` back to the board directory.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="STM32 platform" icon="microchip" href="/platforms/stm32">
+    Build and flash NuttX on STM32F4, F7, and H7 targets.
+  </Card>
+  <Card title="i.MX RT platform" icon="microchip" href="/platforms/imxrt">
+    Build and flash NuttX on NXP i.MX RT targets.
+  </Card>
+  <Card title="Kinetis platform" icon="microchip" href="/platforms/kinetis">
+    Build and flash NuttX on NXP Kinetis targets.
+  </Card>
+  <Card title="Porting guide" icon="map" href="/guides/porting">
+    Step-by-step guide for adding a new board to NuttX.
+  </Card>
+</CardGroup>

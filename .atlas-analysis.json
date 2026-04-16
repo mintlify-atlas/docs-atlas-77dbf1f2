@@ -1,28 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "PX4 NuttX",
+  "projectType": "infrastructure",
+  "projectName": "PX4 NuttX",
+  "projectDescription": "Apache NuttX is a standards-compliant, highly configurable real-time operating system (RTOS) with PX4 patches for drone autopilot hardware including Pixhawk, STM32F4/F7/H7, i.MX RT, and Kinetis platforms.",
   "theme": "aspen",
-  "colors": {
-    "primary": "#848c8e",
-    "light": "#11161e",
-    "dark": "#cfd0d2"
-  },
-  "favicon": "https://media.brand.dev/2b01fe20-c04b-4a1d-a2f9-1d2789c50a7a.jpg",
-  "logo": {
-    "light": "https://media.brand.dev/5ffd6ce4-2434-4b4b-920a-f8cacac8b48b.svg",
-    "dark": "https://media.brand.dev/5ffd6ce4-2434-4b4b-920a-f8cacac8b48b.svg"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/PX4/NuttX"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/PX4/NuttX"
-    }
-  },
+  "primaryColor": "#848c8e",
+  "lightColor": "#11161e",
+  "darkColor": "#cfd0d2",
   "navigation": {
     "tabs": [
       {
@@ -31,7 +14,6 @@
           {
             "group": "Introduction",
             "pages": [
-              "index",
               "introduction/overview",
               "introduction/features",
               "introduction/px4-patches",
@@ -102,5 +84,29 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "POSIX/ANSI standards-compliant RTOS for 8-bit to 64-bit microcontrollers",
+    "PX4 patches for Pixhawk flight controller hardware (STM32F4/F7/H7, i.MX RT, Kinetis)",
+    "Highly configurable via Kconfig/menuconfig build system",
+    "Comprehensive driver framework: USB, I2C, SPI, CAN, serial, networking",
+    "Multiple filesystem support: FAT, ROMFS, LittleFS, SPIFFS, NXFFS",
+    "TCP/IP networking stack with IPv4/IPv6, BSD sockets",
+    "NuttShell (NSH): POSIX-like command-line shell for embedded targets",
+    "Fully pre-emptible scheduler with fixed priority, round-robin, and sporadic scheduling",
+    "Support for flat, protected (MPU), and kernel (MMU) memory configurations",
+    "Graphics support: framebuffer, LCD drivers, NX windowing system"
+  ],
+  "publicApiSurface": [
+    "task_create() / task_delete() — POSIX-like task management",
+    "pthread_create() / pthread_join() — POSIX thread API",
+    "open() / read() / write() / close() — VFS file operations",
+    "socket() / bind() / connect() / send() / recv() — BSD socket API",
+    "sem_init() / sem_wait() / sem_post() — POSIX semaphores",
+    "mq_open() / mq_send() / mq_receive() — POSIX message queues",
+    "register_driver() / register_blockdriver() — Driver registration",
+    "up_irqinitialize() / irq_attach() — Interrupt management",
+    "kmm_malloc() / kmm_free() — Kernel memory allocator",
+    "tools/configure.sh <board>:<config> — Board configuration script"
+  ]
 }

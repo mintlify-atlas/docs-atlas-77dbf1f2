@@ -1,0 +1,225 @@
+---
+title: "NuttX filesystem layer"
+description: "Overview of the NuttX VFS: pseudo root filesystem, mountable volumes, FAT, ROMFS, LittleFS, SPIFFS, NXFFS, TMPFS, procfs, and block device binding."
+---
+
+NuttX provides an optional, scalable filesystem layer built around a Virtual File System (VFS) abstraction. At its core is an in-memory pseudo root filesystem that requires no block device and no storage medium—directory entries and device nodes are created on the fly using standard POSIX calls (`open`, `read`, `write`, `ioctl`). Real, persistent filesystems are layered on top by binding a block device driver to a mountpoint inside the pseudo tree with `mount()`, giving applications a familiar POSIX file I/O model regardless of the underlying storage technology.
+
+## Architecture overview
+
+```
+Application (open / read / write / ioctl / mount)
+         │
+         ▼
+  Virtual File System (VFS)   ←  inode table in sched memory
+         │
+   ┌─────┴──────┬──────────────┬───────────────┐
+   ▼            ▼              ▼               ▼
+/dev nodes   mountpoint    mountpoint      procfs
+(char/block  (FAT on       (LittleFS on    (/proc)
+ drivers)     /dev/mmcsd0)  /dev/mtd0)
+```
+
+The `fs/inode/` subdirectory manages the inode tree; `fs/vfs/` provides the top-level VFS glue that dispatches every file operation to the correct filesystem or driver.
+
+## Mounting and unmounting
+
+```c
+#include <sys/mount.h>
+
+/* Mount a FAT32 volume from block device /dev/mmcsd0 at /mnt/sd */
+int ret = mount("/dev/mmcsd0", "/mnt/sd", "vfat", 0, NULL);
+if (ret < 0)
+  {
+    perror("mount");
+  }
+
+/* Open a file on the mounted volume */
+int fd = open("/mnt/sd/data.bin", O_RDWR | O_CREAT, 0666);
+write(fd, buf, len);
+close(fd);
+
+/* Tear down */
+umount("/mnt/sd");
+```
+
+## Supported filesystems
+
+<AccordionGroup>
+  <Accordion title="FAT12 / FAT16 / FAT32 (vfat)">
+    The most widely used filesystem type in embedded systems. NuttX provides a full read/write FAT implementation in `fs/fat/` with optional long filename (VFAT) support.
+
+    ```kconfig
+    CONFIG_FS_FAT=y
+    CONFIG_FAT_LFN=y          # enable long filenames (patent notice applies)
+    CONFIG_FAT_MAXFNAME=32    # max long filename length
+    ```
+
+    Mount type string: `"vfat"`.  Suitable for SD cards and USB mass storage shared with a PC host.
+  </Accordion>
+
+  <Accordion title="ROMFS (romfs)">
+    A read-only filesystem stored in ROM or a RAM disk image. Supports execute-in-place (XIP) so code can run directly from flash without being copied to RAM. Used by NuttShell's `/etc` startup scripts.
+
+    ```kconfig
+    CONFIG_FS_ROMFS=y
+    ```
+
+    ```c
+    /* Mount a ROMFS image from a RAM disk */
+    mount("/dev/ram0", "/etc", "romfs", MS_RDONLY, NULL);
+    ```
+
+    Mount type string: `"romfs"`.
+  </Accordion>
+
+  <Accordion title="LittleFS (littlefs)">
+    A power-loss-resilient filesystem designed for small NOR flash chips, originating from ARM mbed. Wear-leveling and bad-block detection are built in. Source lives under `fs/littlefs/`.
+
+    ```kconfig
+    CONFIG_FS_LITTLEFS=y
+    ```
+
+    ```c
+    mount("/dev/mtd0", "/flash", "littlefs", 0, NULL);
+    ```
+
+    Mount type string: `"littlefs"`. Preferred choice for internal flash on STM32 and i.MX RT targets.
+  </Accordion>
+
+  <Accordion title="SPIFFS (spiffs)">
+    SPI Flash File System (originally by Peter Andersson). Wear-leveling flash filesystem with no dynamic memory allocation. Source in `fs/spiffs/`.
+
+    ```kconfig
+    CONFIG_FS_SPIFFS=y
+    ```
+
+    Mount type string: `"spiffs"`.
+  </Accordion>
+
+  <Accordion title="NXFFS — NuttX wear-leveling flash FS">
+    NuttX's own tiny wear-leveling FLASH filesystem located in `fs/nxffs/`. Optimised for NOR flash devices accessed via the MTD layer.
+
+    ```kconfig
+    CONFIG_FS_NXFFS=y
+    ```
+
+    Mount type string: `"nxffs"`.
+  </Accordion>
+
+  <Accordion title="TMPFS — RAM-backed temporary filesystem">
+    An in-memory filesystem with no persistent backing store. Allocations come from the heap and are released when the filesystem is unmounted. Located in `fs/tmpfs/`.
+
+    ```kconfig
+    CONFIG_FS_TMPFS=y
+    ```
+
+    ```c
+    mount(NULL, "/tmp", "tmpfs", 0, NULL);
+    ```
+
+    Mount type string: `"tmpfs"`.
+  </Accordion>
+
+  <Accordion title="procfs — kernel introspection pseudo-filesystem">
+    Exports kernel state (task list, CPU load, network interfaces, memory map, IRQ counters) as read-only text files under `/proc`. No storage required. Source in `fs/procfs/`.
+
+    ```kconfig
+    CONFIG_FS_PROCFS=y
+    ```
+
+    ```c
+    mount(NULL, "/proc", "procfs", 0, NULL);
+
+    /* Read task list */
+    int fd = open("/proc/0/status", O_RDONLY);
+    ```
+
+    Mount type string: `"procfs"`.
+  </Accordion>
+
+  <Accordion title="NFS client (nfs)">
+    Client-side Network File System (NFS version 3, UDP). Lets a NuttX board mount a directory exported by a Linux or macOS NFS server over an Ethernet link.
+
+    ```kconfig
+    CONFIG_NFS=y
+    CONFIG_NET_UDP=y
+    ```
+
+    Mount type string: `"nfs"`. Additional mount data must pass an `nfs_args` structure describing the server address and export path.
+  </Accordion>
+</AccordionGroup>
+
+## File operations example
+
+<Steps>
+  <Step title="Open / create a file">
+    ```c
+    #include <fcntl.h>
+
+    int fd = open("/mnt/sd/log.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    ```
+  </Step>
+
+  <Step title="Write data">
+    ```c
+    const char *msg = "hello NuttX\n";
+    ssize_t n = write(fd, msg, strlen(msg));
+    ```
+  </Step>
+
+  <Step title="Seek and read back">
+    ```c
+    lseek(fd, 0, SEEK_SET);
+    char buf[64];
+    ssize_t nr = read(fd, buf, sizeof(buf) - 1);
+    buf[nr] = '\0';
+    ```
+  </Step>
+
+  <Step title="Close and unmount">
+    ```c
+    close(fd);
+    umount("/mnt/sd");
+    ```
+  </Step>
+</Steps>
+
+## Block device binding
+
+Every mountable filesystem requires a block device driver registered in the VFS under `/dev`. The `mount()` call binds three things together: the block device path, the mountpoint path, and the filesystem type string.
+
+```c
+/*
+ * Typical sequence for an SD card on SPI:
+ *
+ * 1. Board init registers the SPI MMC/SD block driver:
+ *    mmcsd_spislotinitialize(slot, spi_dev) -> creates /dev/mmcsd0
+ *
+ * 2. Application (or rc.sysinit) mounts the volume:
+ */
+ret = mount("/dev/mmcsd0", "/mnt/sd", "vfat", 0, NULL);
+```
+
+For raw flash (MTD) devices the MTD layer translates erase-block operations to the block driver interface, and the FTL (Flash Translation Layer) optionally provides a conventional block device on top:
+
+```kconfig
+CONFIG_MTD=y
+CONFIG_MTD_M25P=y     # example: M25Pxx SPI NOR flash
+CONFIG_MTD_FTL=y      # FAT-compatible block layer over MTD
+```
+
+<CardGroup cols={2}>
+  <Card title="Block driver framework" href="/reference/block-drivers">
+    How to write and register a NuttX block device driver.
+  </Card>
+  <Card title="Character driver framework" href="/reference/character-drivers">
+    Registering character devices and handling ioctl.
+  </Card>
+  <Card title="Device driver overview" href="/components/drivers">
+    Upper-half / lower-half driver model and VFS integration.
+  </Card>
+  <Card title="NuttShell (NSH)" href="/components/nsh">
+    Using mount, umount, and filesystem commands from the shell.
+  </Card>
+</CardGroup>

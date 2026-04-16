@@ -1,0 +1,203 @@
+---
+title: "NuttX feature set"
+description: "Detailed breakdown of NuttX subsystems: task management, filesystems, device drivers, C/C++ libraries, networking, USB, graphics, and FLASH support."
+---
+
+NuttX ships a broad set of OS services despite targeting resource-constrained microcontrollers. The key to reconciling a rich feature set with a small footprint is link-time selection: every subsystem is compiled into its own tiny source file and archived into a static library. Only the object files that are actually referenced at link time are pulled into the final binary. The result is that the feature list below represents the *available* surface area of NuttX — what ends up in your firmware is determined entirely by your Kconfig configuration.
+
+The sections below correspond directly to the categories documented in the NuttX source tree under `Documentation/introduction/about.rst`.
+
+<AccordionGroup>
+  <Accordion title="Task management">
+    NuttX provides a fully pre-emptible, standards-compliant task management core with the following characteristics:
+
+    - **Scheduling policies** — fixed-priority FIFO, round-robin, and sporadic (bandwidth-limited) scheduling.
+    - **Real-time determinism** — priority inheritance prevents priority inversion; tickless operation eliminates periodic timer jitter.
+    - **POSIX/ANSI interfaces** — `pthread`, named message queues, counting semaphores, clocks, timers, signals, robust mutexes, cancellation points, environment variables, and a filesystem abstraction.
+    - **VxWorks-compatible APIs** — task management and watchdog timer interfaces familiar to developers coming from VxWorks.
+    - **BSD socket interface** — standard socket calls integrated into the task model.
+    - **Optional processes** — tasks can be given private address environments to behave like lightweight processes.
+    - **Loadable kernel modules** — ELF modules and lightweight shared libraries can be loaded at runtime.
+    - **Memory configurations** — flat embedded build, protected build (MPU), or kernel build (MMU).
+    - **Memory allocators** — standard heap allocation, granule allocator, shared memory, and dynamically sized per-process heaps.
+    - **I/O features** — inheritable controlling terminals, I/O redirection, and pseudo-terminals.
+    - **Observability** — built-in per-thread CPU load measurements and system logging.
+    - **Pseudo-terminal and on-demand paging** support.
+
+    NuttX may be built either as an open flat RTOS or as a separately compiled, secure monolithic kernel with a system-call interface separating user and kernel code.
+  </Accordion>
+
+  <Accordion title="File system">
+    NuttX includes a virtual file system (VFS) that supports both in-memory pseudo-filesystems and mountable block-device-backed volumes.
+
+    **In-memory and pseudo-filesystems:**
+    - Tiny root pseudo-filesystem.
+    - `procfs/` — process and kernel state exposed as files.
+    - `TMPFS` — RAM-backed temporary filesystem.
+    - `BINFS` — pseudo-filesystem that exposes built-in applications.
+    - `HOSTFS` — host filesystem pass-through (simulation only).
+    - `UserFS` — user-space implemented filesystem.
+
+    **Block-device-backed filesystems:**
+    - `FAT12/16/32` — with optional FAT long filename (LFN) support (see licensing note in NOTICE).
+    - `ROMFS` / `CROMFS` — read-only (compressed) filesystem, XIP capable.
+    - `NXFFS` — NuttX wear-levelling FLASH filesystem.
+    - `SmartFS` — FLASH filesystem by Ken Pettit.
+    - `SPIFFS` — FLASH filesystem originally by Peter Andersson.
+    - `LittleFS` — FLASH filesystem from ARM mbed.
+    - `NFS client` — client-side Network File System (NFSv3, UDP).
+    - `Union filesystem` — overlay and combine multiple filesystems.
+
+    **Binary formats:**
+    - Separately linked ELF modules.
+    - NXFLAT modules (XIP-capable binary format).
+    - Built-in applications.
+
+    **File transfer utilities:** TFTP and FTP (`get`/`put`), HTTP (`wget`), and Zmodem (`sz`/`rz`). PATH variable support is included.
+
+    <Warning>
+      FAT long filename support (`CONFIG_FAT_LFN`) may be subject to Microsoft patent restrictions. Review the `NOTICE` file and consult legal counsel before enabling LFN in a commercial product. See the [licensing page](/introduction/licensing) for the full notice text.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="Device drivers">
+    NuttX supports character drivers, block drivers, and specialised driver interfaces, all integrated into the VFS so that devices appear as files.
+
+    **Driver architectures provided:**
+    - Network, USB host, USB device, serial (UART/SPI/I2C/I2S), NAND, CAN, ADC, DAC, PWM, quadrature encoder, I/O expander, wireless, generic timer, and watchdog timer.
+    - RAMDISK, pipes, FIFO, `/dev/null`, `/dev/zero`, `/dev/random`, and loop drivers.
+    - Generic SPI-based or SDIO-based MMC/SD/SDH card driver.
+
+    **Higher-level subsystems:**
+    - Graphics: framebuffer drivers, parallel and SPI LCD/OLED drivers, segment LCD drivers, VNC server, and `mmap`-able framebuffer character driver.
+    - Audio: CODEC support, audio input and output drivers, command-line and graphical media player applications.
+    - Cryptographic subsystem.
+    - Power management sub-system.
+    - ModBus via integrated FreeModBus 1.5.0.
+    - Asynchronous I/O (AIO).
+
+    See the [driver framework reference](/reference/driver-framework), [block drivers](/reference/block-drivers), and [character drivers](/reference/character-drivers) for API details.
+  </Accordion>
+
+  <Accordion title="C/C++ libraries">
+    NuttX provides a fully integrated C standard library — it is not a wrapper around an external libc. Key points:
+
+    - **Standard C Library** — fully integrated into the OS build; no external libc dependency.
+    - **Math library** — floating-point support via a standard math library (`CONFIG_LIBM`). Architecture-specific tuned libraries can be substituted.
+    - **C++ support** — the add-on uClibc++ module provides the C++ Standard Library (LGPL licensed).
+
+    Because the C library is part of the kernel build, header files from third-party toolchains (e.g., newlib) must not be mixed with NuttX headers — they define incompatible types and functions.
+  </Accordion>
+
+  <Accordion title="Networking">
+    NuttX includes a full embedded network stack with multiple interface and link-layer support.
+
+    **Protocol support:**
+    - IPv4, IPv6, TCP/IP, UDP, ICMP, ICMPv6, IGMPv2, MLDv1/v2 (client).
+    - IP forwarding (routing).
+    - DNS name resolution / NetDB.
+    - ICMPv6 autonomous auto-configuration.
+    - 6LoWPAN for IEEE 802.15.4 MAC and generic packet radios.
+
+    **Address families:**
+    - `AF_INET` / `AF_INET6` — standard IPv4/IPv6.
+    - `AF_PACKET` — raw socket access.
+    - `AF_IEEE802154` — raw IEEE 802.15.4.
+    - `AF_BLUETOOTH` — raw Bluetooth.
+    - `AF_LOCAL` — Unix domain sockets.
+
+    **Radio and wireless:**
+    - IEEE 802.11 FullMAC.
+    - IEEE 802.15.4 MAC, Generic Packet Radio, Bluetooth LE network drivers.
+
+    **Virtual interfaces:** SLIP, TUN/PPP, local loopback.
+
+    **Network utilities:** DHCP server and client, SMTP client, Telnet server and client, FTP server and client, TFTP client, HTTP server and client (`thttpd` port with CGI via binfmt), PPPD, NTP client, VNC server, UDP network discovery, XML-RPC server.
+
+    **Embedded JSON:** a port of cJSON is included.
+
+    See the [networking component reference](/components/networking) for configuration details.
+  </Accordion>
+
+  <Accordion title="FLASH support">
+    NuttX provides a layered abstraction for memory technology devices (MTDs).
+
+    - **MTD interface** — a standardised interface for FLASH, FRAM, and NAND devices.
+    - **NAND support** — raw NAND access and wear-levelling.
+    - **Flash Translation Layer (FTL)** — simple block-device emulation over raw FLASH to support standard filesystems.
+    - **Wear-levelling filesystems** — NXFFS, SmartFS, and SPIFFS all implement wear levelling at the filesystem level.
+    - **SPI-based FLASH/FRAM** — generic driver for common SPI NOR FLASH and FRAM parts.
+
+    The MTD layer cleanly separates the hardware-specific driver from the filesystem or FTL layer above it, making it straightforward to add support for new FLASH devices.
+  </Accordion>
+
+  <Accordion title="USB host and device">
+    NuttX provides separate, symmetric architectures for USB host and USB device operation.
+
+    **USB host:**
+    - Host controller drivers available for Atmel SAMA5Dx, NXP LPC17xx, LPC31xx, and STMicro STM32.
+    - Class drivers: USB mass storage, CDC/ACM serial, HID keyboard, HID mouse.
+    - Transparent USB hub support.
+
+    **USB device:**
+    - Gadget-like architecture for USB device controller (UDC) drivers and class drivers.
+    - UDC support across a broad range of MCUs including PIC32, Atmel AVR/SAM3/SAM4/SAMv7/SAMA5Dx, NXP/Freescale LPC17xx/LPC214x/LPC313x/LPC43xx/Kinetis, Silicon Labs EFM32, STMicro STM32 F1/F2/F3/F4/F7, TI DM320, and others.
+    - Class drivers: CDC/ACM serial, PL2303 emulation, mass storage, RNDIS, CDC/ECM networking, DFU, and dynamically configurable composite USB devices.
+    - Built-in USB trace functionality for non-invasive debug.
+
+    See the [USB guide](/guides/usb) for usage and configuration.
+  </Accordion>
+
+  <Accordion title="Graphics">
+    NuttX includes a graphics subsystem suitable for small embedded displays.
+
+    - **Framebuffer drivers** — direct framebuffer access and `mmap`-able character driver interface.
+    - **LCD drivers** — parallel and SPI LCD and OLED drivers; segment LCD drivers.
+    - **VNC server** — remote framebuffer access.
+    - **NX graphics library** — a tiny windowing system with font support, works over both framebuffer and LCD drivers.
+    - **Font management** — pluggable font sub-system.
+    - **NxWidgets** — C++ library of GUI widgets (labels, buttons, text boxes, sliders, progress bars, images) built on top of NX.
+    - **NxWM** — tiny NuttX window manager based on NX and NxWidgets.
+  </Accordion>
+
+  <Accordion title="Add-ons and utilities">
+    The following packages extend the base NuttX feature set and are available as optional components.
+
+    **NuttShell (NSH):** A small, scalable, bash-like shell for NuttX. NSH provides a rich interactive environment for configuring devices, running applications, and debugging. See the [NSH component page](/components/nsh).
+
+    **BAS 2.4:** An integration of Michael Haardt's BAS 2.4 BASIC interpreter, compatible with 1980s-era BASIC dialects, including ANSI BASIC structured programming constructs such as procedures, local variables, and matrix operations.
+
+    **Input devices:** Touchscreen, USB keyboard, GPIO-based buttons and keypads.
+
+    **Analog devices:** ADC, DAC, multiplexer, and amplifier support.
+
+    **Motor control:** PWM and pulse-count modulation for motor drive applications.
+  </Accordion>
+</AccordionGroup>
+
+## How NuttX stays small
+
+With hundreds of source files and the feature list above, it might not be obvious how NuttX qualifies as a small OS. Two techniques keep the binary size in check regardless of the feature set:
+
+1. **Static library linking** — objects are compiled and archived into static libraries. The linker extracts only the object files that are actually referenced, so unused features contribute zero bytes to the final binary.
+
+2. **Kconfig configuration** — before building, you select exactly which features you need via a Kconfig menu (`make menuconfig`). Unselected features are never compiled. A typical richly-featured NuttX build requires 64 KB of total memory; a minimal configuration can run in as little as 32 KB.
+
+<Tip>
+  Use `make savedefconfig` to capture a compressed representation of only the non-default configuration values. This keeps your board's `defconfig` file small and makes diffs between configurations readable.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Task management reference" icon="list-tree" href="/reference/task-management">
+    POSIX task, thread, and IPC API reference.
+  </Card>
+  <Card title="Filesystem component" icon="folder" href="/components/filesystem">
+    VFS architecture and filesystem configuration guide.
+  </Card>
+  <Card title="Device drivers guide" icon="plug" href="/guides/device-drivers">
+    How to write and register NuttX device drivers.
+  </Card>
+  <Card title="Networking component" icon="network" href="/components/networking">
+    Network stack configuration and interface management.
+  </Card>
+</CardGroup>

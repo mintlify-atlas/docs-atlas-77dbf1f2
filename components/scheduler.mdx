@@ -1,0 +1,204 @@
+---
+title: "NuttX task scheduler"
+description: "NuttX scheduler internals: FIFO, round-robin, and sporadic policies, task priorities, priority inheritance, tickless operation, and SMP support."
+---
+
+The NuttX task scheduler is a fully pre-emptible, real-time scheduler designed for microcontroller environments ranging from 8-bit to 64-bit architectures. It implements the POSIX scheduling model, supporting fixed-priority FIFO, round-robin time-sliced, and sporadic server scheduling—all selectable per-task at runtime. The scheduler is deterministic: the highest-priority runnable task always executes, context switches occur in constant time, and scheduling decisions are made entirely in `sched/sched/` with no hidden latency sources.
+
+## Scheduling policies
+
+NuttX exposes three scheduling policies through the standard `sched_setscheduler()` / `sched_setparam()` POSIX interface.
+
+<AccordionGroup>
+  <Accordion title="SCHED_FIFO — fixed-priority, run-to-completion">
+    Under `SCHED_FIFO` a task runs until it voluntarily blocks, calls `sched_yield()`, or is pre-empted by a **higher**-priority task. Tasks at the same priority are never time-sliced; the first task to become ready at a given priority runs until it relinquishes the CPU.
+
+    ```c
+    #include <sched.h>
+
+    struct sched_param param;
+    param.sched_priority = 120;          /* 1 (lowest) … 255 (highest) */
+
+    /* Apply to the calling task */
+    sched_setparam(0, &param);
+
+    /* Or switch policy and priority atomically */
+    sched_setscheduler(0, SCHED_FIFO, &param);
+    ```
+
+    <Note>
+      Priority 0 is reserved for the idle task. Application tasks should use values in the range `SCHED_PRIORITY_MIN` (1) through `SCHED_PRIORITY_MAX` (255).
+    </Note>
+  </Accordion>
+
+  <Accordion title="SCHED_RR — round-robin time-slicing">
+    `SCHED_RR` is identical to `SCHED_FIFO` except that tasks at the **same** priority are rotated after every time slice. The slice length is set at build time with `CONFIG_RR_INTERVAL` (milliseconds). When the slice expires, `nxsched_process_roundrobin()` in `sched/sched/sched_roundrobin.c` moves the current task to the tail of the ready list and selects the next peer.
+
+    ```c
+    struct sched_param param;
+    param.sched_priority = 100;
+
+    sched_setscheduler(0, SCHED_RR, &param);
+
+    /* Query the current interval (POSIX) */
+    struct timespec ts;
+    sched_rr_get_interval(0, &ts);   /* ts.tv_nsec = CONFIG_RR_INTERVAL * 1e6 */
+    ```
+
+    Relevant Kconfig options:
+
+    | Option | Default | Description |
+    |--------|---------|-------------|
+    | `CONFIG_RR_INTERVAL` | `200` | Round-robin time slice in milliseconds |
+    | `CONFIG_MAX_TASKS` | `64` | Maximum simultaneous tasks in the system |
+  </Accordion>
+
+  <Accordion title="SCHED_SPORADIC — bandwidth-capped real-time">
+    Sporadic scheduling (`CONFIG_SCHED_SPORADIC`) provides a POSIX-standard way to bound the CPU fraction consumed by a task. Within each replenishment period the task runs at its **high** priority for at most `sched_ss_init_budget` time, then drops to `sched_ss_low_priority` for the rest of the period.
+
+    ```c
+    #include <sched.h>
+
+    struct sched_param param;
+    param.sched_priority        = 200;   /* high priority */
+    param.sched_ss_low_priority = 50;    /* fallback priority */
+    param.sched_ss_max_repl     = 3;     /* max replenishments */
+
+    /* Budget: 10 ms per replenishment period */
+    param.sched_ss_init_budget.tv_sec  = 0;
+    param.sched_ss_init_budget.tv_nsec = 10000000;
+
+    /* Period: 100 ms */
+    param.sched_ss_repl_period.tv_sec  = 0;
+    param.sched_ss_repl_period.tv_nsec = 100000000;
+
+    sched_setscheduler(0, SCHED_SPORADIC, &param);
+    ```
+
+    The implementation lives in `sched/sched/sched_sporadic.c`. Requires `CONFIG_SCHED_SPORADIC=y` and `CONFIG_SCHED_SPORADIC_MAXREPL` (default 3).
+  </Accordion>
+</AccordionGroup>
+
+## Task priorities
+
+NuttX uses a linear priority range where **larger numbers indicate higher priority**.
+
+```c
+#include <sched.h>
+
+int max_prio = sched_get_priority_max(SCHED_FIFO);   /* 255 */
+int min_prio = sched_get_priority_min(SCHED_FIFO);   /* 1   */
+
+/* Boost own priority */
+struct sched_param p;
+sched_getparam(0, &p);
+p.sched_priority += 10;
+sched_setparam(0, &p);
+```
+
+The idle task always runs at priority 0 and cannot be preempted by any real task because no application task may use that priority.
+
+## POSIX pthreads
+
+NuttX implements the full `pthread` API. Threads share the address space of their parent task and are scheduled using the same priority-based pre-emption mechanism.
+
+```c
+#include <pthread.h>
+
+static void *worker(void *arg)
+{
+  /* thread body */
+  return NULL;
+}
+
+pthread_t tid;
+pthread_attr_t attr;
+
+pthread_attr_init(&attr);
+
+struct sched_param param;
+param.sched_priority = 150;
+pthread_attr_setschedparam(&attr, &param);
+pthread_attr_setschedpolicy(&attr, SCHED_FIFO);
+
+pthread_create(&tid, &attr, worker, NULL);
+pthread_join(tid, NULL);
+pthread_attr_destroy(&attr);
+```
+
+## Priority inheritance
+
+Mutex priority inheritance prevents priority inversion. When a high-priority task blocks on a mutex held by a lower-priority task, the holder's priority is temporarily elevated to that of the waiter. Enable it with:
+
+```kconfig
+CONFIG_PRIORITY_INHERITANCE=y
+CONFIG_SEM_PREALLOCHOLDERS=8    # pre-allocated holder records
+CONFIG_SEM_NNESTPRIO=8          # max nesting depth
+```
+
+```c
+#include <pthread.h>
+
+pthread_mutexattr_t mattr;
+pthread_mutexattr_init(&mattr);
+pthread_mutexattr_setprotocol(&mattr, PTHREAD_PRIO_INHERIT);
+
+pthread_mutex_t mutex;
+pthread_mutex_init(&mutex, &mattr);
+```
+
+## Tickless operation
+
+Setting `CONFIG_SCHED_TICKLESS=y` eliminates the fixed periodic tick interrupt. Instead, NuttX programs a one-shot hardware timer for the next scheduled event. The platform calls `nxsched_timer_expiration()` or `nxsched_alarm_expiration()` (declared in `Documentation/reference/os/nuttx.rst`) when the interval fires, saving CPU cycles and improving deep-sleep wake latency.
+
+```kconfig
+CONFIG_SCHED_TICKLESS=y
+CONFIG_SCHED_TICKLESS_ALARM=y   # use alarm-mode timer if available
+CONFIG_USEC_PER_TICK=1000       # fallback resolution when tickless disabled
+```
+
+## SMP support
+
+On multi-core targets NuttX can run tasks in parallel across all available CPUs. Each CPU maintains its own ready-to-run list; inter-CPU task migration is handled by `sched/sched/sched_cpuselect.c` and `sched_cpupause.c`.
+
+```kconfig
+CONFIG_SMP=y
+CONFIG_SMP_NCPUS=2     # number of cores
+```
+
+```c
+/* Pin a task to CPU 1 */
+#include <nuttx/sched.h>
+
+cpu_set_t cpuset;
+CPU_ZERO(&cpuset);
+CPU_SET(1, &cpuset);
+sched_setaffinity(0, sizeof(cpu_set_t), &cpuset);
+```
+
+## Key Kconfig reference
+
+| Option | Purpose |
+|--------|---------|
+| `CONFIG_MAX_TASKS` | Maximum number of concurrent tasks (default 64) |
+| `CONFIG_RR_INTERVAL` | Round-robin time slice in ms (default 200) |
+| `CONFIG_SCHED_SPORADIC` | Enable sporadic scheduling policy |
+| `CONFIG_SCHED_TICKLESS` | Enable tickless (one-shot timer) operation |
+| `CONFIG_PRIORITY_INHERITANCE` | Enable mutex priority inheritance |
+| `CONFIG_SMP` | Enable symmetric multi-processing |
+| `CONFIG_SMP_NCPUS` | Number of CPUs to use |
+
+<CardGroup cols={2}>
+  <Card title="Task management API" href="/reference/task-management">
+    Full POSIX task and thread lifecycle functions.
+  </Card>
+  <Card title="POSIX API reference" href="/reference/posix-api">
+    Complete listing of supported POSIX interfaces.
+  </Card>
+  <Card title="IPC primitives" href="/reference/ipc">
+    Semaphores, message queues, signals, and mutexes.
+  </Card>
+  <Card title="Memory management" href="/reference/memory">
+    Heap allocators, granule allocator, and shared memory.
+  </Card>
+</CardGroup>

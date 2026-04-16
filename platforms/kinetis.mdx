@@ -1,0 +1,145 @@
+---
+title: "Kinetis (NXP) support in NuttX"
+description: "NuttX supports NXP Kinetis K20, K40, K60, K64, and K66 Cortex-M4 MCUs, including Freedom development boards and Teensy 3.x targets."
+---
+
+The NXP Kinetis family (formerly Freescale) consists of ARM Cortex-M4 microcontrollers aimed at industrial control, motor drive, and IoT applications. NuttX has supported Kinetis since the Freescale era and covers K20, K40, K60, K64, and K66 devices. The most capable supported board is the FRDM-K66F with a 180 MHz K66 MCU, dual-role USB, Ethernet, and an on-board sensor suite. The Teensy 3.x series (K20-based) is also supported.
+
+## Supported boards
+
+The following boards are present under `boards/arm/kinetis/`:
+
+| Board directory | MCU | Description |
+|---|---|---|
+| `freedom-k28f` | MK28FN2M0VMI15 | FRDM-K28F Freedom development board |
+| `freedom-k64f` | MK64FN1M0VLL12 | FRDM-K64F — 120 MHz, 1 MB Flash, 256 KB RAM |
+| `freedom-k66f` | MK66FN2M0VMD18 | FRDM-K66F — 180 MHz, 2 MB Flash, 256 KB RAM |
+| `kwikstik-k40` | MK40X256VMD100 | Freescale KWIKSTIK-K40 evaluation board |
+| `teensy-3.x` | MK20DX256VLH7 | Teensy 3.1 (72 MHz); also supports Teensy 3.0 (MK20DX128VLH5) |
+| `twr-k60n512` | MK60N512VMD100 | Freescale Tower K60N512 module |
+| `twr-k64f120m` | MK64FN1M0VLL12 | Freescale Tower K64F module |
+
+## Board details
+
+### FRDM-K66F
+
+The Freedom-K66F is the flagship Kinetis development board. It features:
+
+- **MK66FN2M0VMD18** MCU — Cortex-M4F at 180 MHz, 2 MB Flash, 256 KB RAM, 144 MAPBGA package
+- Dual-role USB with micro-B connector
+- Ethernet (10/100)
+- Micro SD card socket
+- FXOS8700CQ accelerometer/magnetometer and FXAS21002 gyroscope
+- RGB LED, two user push buttons
+- Arduino R3-compatible I/O headers
+- OpenSDAv2.1 debug interface with J-Link firmware
+
+**Available configurations:** `netnsh`, `nsh`
+
+### FRDM-K64F
+
+The Freedom-K64F is the predecessor to the K66F and is widely used in the NuttX community.
+
+- **MK64FN1M0VLL12** MCU — Cortex-M4F at 120 MHz, 1 MB Flash, 256 KB RAM
+- Ethernet, SDHC, dual-role USB
+- OpenSDAv2 debug interface (CMSIS-DAP)
+- Arduino R3-compatible headers
+
+**Available configurations:** `cdcacm`, `demo`, `netnsh`, `nsh`
+
+### Teensy 3.x
+
+The Teensy 3.1 from PJRC (and the older Teensy 3.0) are compact development boards based on the NXP Kinetis K20:
+
+- **Teensy 3.1** — MK20DX256VLH7, Cortex-M4 at 72 MHz (overclockable to 96 MHz), 256 KB Flash, 64 KB SRAM
+- **Teensy 3.0** — MK20DX128VLH5, Cortex-M4 at 48 MHz, 128 KB Flash, 16 KB SRAM
+
+Both boards use the same NuttX board directory (`teensy-3.x`). The correct chip is selected through Kconfig:
+
+```kconfig
+# Teensy 3.0
+CONFIG_ARCH_CHIP_MK20DX128VLH5=y
+
+# Teensy 3.1 (default)
+CONFIG_ARCH_CHIP_MK20DX256VLH7=y
+```
+
+**Available configurations:** `nsh`, `usbnsh`
+
+<Tip>
+The Teensy 3.x boards do not have an on-board debug probe. Use a JTAG/SWD adapter connected to the SWD pads on the underside of the board, or load firmware via the Halfkey bootloader using `teensy_loader_cli`.
+</Tip>
+
+## Configuring and building
+
+<Steps>
+  <Step title="Select a board configuration">
+    ```bash
+    cd nuttx
+    ./tools/configure.sh freedom-k66f:nsh
+    ```
+
+    For Teensy 3.1:
+
+    ```bash
+    ./tools/configure.sh teensy-3.x:nsh
+    ```
+  </Step>
+  <Step title="Optionally adjust options">
+    ```bash
+    make menuconfig
+    ```
+  </Step>
+  <Step title="Build">
+    ```bash
+    make -j$(nproc)
+    ```
+  </Step>
+  <Step title="Flash">
+    For FRDM boards with OpenSDA, copy `nuttx.bin` to the mass-storage drive that appears when you connect the USB debug port, or use J-Link:
+
+    ```bash
+    JLinkExe -device MK66FN2M0XXX18 -if SWD -speed 4000
+    ```
+
+    For Teensy 3.x, use the Halfkey loader:
+
+    ```bash
+    teensy_loader_cli --mcu=mk20dx256 -w -v nuttx.hex
+    ```
+  </Step>
+</Steps>
+
+## Kinetis peripheral support
+
+<AccordionGroup>
+  <Accordion title="UART / serial console">
+    The primary serial console on the FRDM boards is wired to the OpenSDA VCOM port. On the FRDM-K66F, UART0 uses PTB16 (RX) and PTB17 (TX). An alternative console is available on the Arduino shield headers (D0/D1).
+  </Accordion>
+  <Accordion title="Ethernet">
+    The K64F and K66F include a 10/100 Ethernet MAC. The FRDM-K64F and FRDM-K66F boards both provide an RJ45 connector. Enable networking with `CONFIG_NET=y` and `CONFIG_KINETIS_ENET=y`.
+  </Accordion>
+  <Accordion title="USB">
+    The K64F and K66F have a dual-role USB controller (device and host). CDC-ACM device mode is supported. USB host support is available through the USB host stack.
+  </Accordion>
+  <Accordion title="SD card">
+    The K64F and K66F include an SDHC peripheral. The FRDM boards have a micro SD card socket. Enable with `CONFIG_KINETIS_SDHC=y` and the FAT file system driver.
+  </Accordion>
+</AccordionGroup>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Platforms overview" href="/platforms/overview" icon="map">
+    Architecture overview and directory structure for all NuttX platforms.
+  </Card>
+  <Card title="i.MX RT support" href="/platforms/imxrt" icon="microchip">
+    NXP i.MX RT Cortex-M7 crossover MCUs — the modern successor to Kinetis.
+  </Card>
+  <Card title="Driver framework" href="/reference/driver-framework" icon="plug">
+    How NuttX registers and manages device drivers.
+  </Card>
+  <Card title="Porting guide" href="/guides/porting" icon="wrench">
+    Step-by-step instructions for bringing up NuttX on new hardware.
+  </Card>
+</CardGroup>

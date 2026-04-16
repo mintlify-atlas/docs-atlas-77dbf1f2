@@ -1,0 +1,392 @@
+---
+title: "Block driver API reference"
+description: "Complete reference for the block_operations struct, geometry ioctl, sector read/write, the MTD layer, and register_blockdriver() usage."
+---
+
+Block drivers expose storage media — SD cards, eMMC, NOR/NAND flash, RAM disks — to NuttX file systems as a flat array of fixed-size sectors. Unlike character drivers, which deal in byte streams, block drivers operate on whole sectors at a time and are addressed by `struct inode *` rather than `struct file *`. This means there is no per-open state: the inode is the handle. File systems such as FAT, LittleFS, and ROMFS sit on top of block drivers and call their `read`, `write`, and `geometry` callbacks directly. Flash-based media that requires explicit erase operations before write is handled by the Memory Technology Device (MTD) layer, which sits between the raw chip driver and the block interface.
+
+<Note>
+Block driver support requires `CONFIG_DISABLE_MOUNTPOINT` to be unset. Without mount-point support the `register_blockdriver()` function is not compiled into the kernel.
+</Note>
+
+## `struct block_operations`
+
+This vtable, defined in `include/nuttx/fs/fs.h`, is the complete interface that a block driver must implement:
+
+```c
+struct block_operations
+{
+  int     (*open)(FAR struct inode *inode);
+  int     (*close)(FAR struct inode *inode);
+  ssize_t (*read)(FAR struct inode *inode, FAR unsigned char *buffer,
+            blkcnt_t start_sector, unsigned int nsectors);
+  ssize_t (*write)(FAR struct inode *inode, FAR const unsigned char *buffer,
+            blkcnt_t start_sector, unsigned int nsectors);
+  int     (*geometry)(FAR struct inode *inode, FAR struct geometry *geometry);
+  int     (*ioctl)(FAR struct inode *inode, int cmd, unsigned long arg);
+#ifndef CONFIG_DISABLE_PSEUDOFS_OPERATIONS
+  int     (*unlink)(FAR struct inode *inode);
+#endif
+};
+```
+
+<Warning>
+The `inode` pointer passed to block callbacks is the driver's registration inode, **not** a per-open file structure. Driver state must be stored in `inode->i_private` and protected with a mutex or semaphore because multiple tasks may issue concurrent requests through the same inode.
+</Warning>
+
+## Callback reference
+
+<AccordionGroup>
+  <Accordion title="open — prepare media for access">
+    ```c
+    int (*open)(FAR struct inode *inode);
+    ```
+
+    Called when a file system or raw block device consumer first opens the device. Use this to power up the hardware, check that media is inserted, or increment a reference count.
+
+    <ParamField path="inode" type="struct inode *" required>
+      The driver's inode. Retrieve your private state with `inode->i_private`.
+    </ParamField>
+
+    Returns `0` on success or a negated `errno` value. Return `-ENODEV` if media is absent.
+  </Accordion>
+
+  <Accordion title="close — release media resources">
+    ```c
+    int (*close)(FAR struct inode *inode);
+    ```
+
+    Called when the last consumer closes the device. Power down hardware or decrement the reference count here.
+
+    <ParamField path="inode" type="struct inode *" required>
+      The driver's inode.
+    </ParamField>
+
+    Returns `0` on success or a negated `errno` value.
+  </Accordion>
+
+  <Accordion title="read — read sectors from the device">
+    ```c
+    ssize_t (*read)(FAR struct inode *inode,
+                    FAR unsigned char *buffer,
+                    blkcnt_t start_sector,
+                    unsigned int nsectors);
+    ```
+
+    Reads `nsectors` consecutive sectors beginning at `start_sector` into `buffer`. The buffer must be at least `nsectors * geo_sectorsize` bytes.
+
+    <ParamField path="inode" type="struct inode *" required>
+      The driver's inode.
+    </ParamField>
+    <ParamField path="buffer" type="unsigned char *" required>
+      Destination buffer for sector data. Must be large enough to hold `nsectors` complete sectors.
+    </ParamField>
+    <ParamField path="start_sector" type="blkcnt_t" required>
+      Zero-based index of the first sector to read.
+    </ParamField>
+    <ParamField path="nsectors" type="unsigned int" required>
+      Number of sectors to read in this request.
+    </ParamField>
+
+    Returns the number of sectors successfully read, or a negated `errno` on error. A short read (positive value less than `nsectors`) is treated as an error by most file systems.
+  </Accordion>
+
+  <Accordion title="write — write sectors to the device">
+    ```c
+    ssize_t (*write)(FAR struct inode *inode,
+                     FAR const unsigned char *buffer,
+                     blkcnt_t start_sector,
+                     unsigned int nsectors);
+    ```
+
+    Writes `nsectors` sectors from `buffer` to the device starting at `start_sector`. For block devices backed by flash, ensure the underlying sectors have been erased before writing.
+
+    <ParamField path="inode" type="struct inode *" required>
+      The driver's inode.
+    </ParamField>
+    <ParamField path="buffer" type="const unsigned char *" required>
+      Source data. Must contain exactly `nsectors * geo_sectorsize` bytes of valid data.
+    </ParamField>
+    <ParamField path="start_sector" type="blkcnt_t" required>
+      Zero-based index of the first sector to write.
+    </ParamField>
+    <ParamField path="nsectors" type="unsigned int" required>
+      Number of sectors to write.
+    </ParamField>
+
+    Returns the number of sectors written, or a negated `errno` on error.
+  </Accordion>
+
+  <Accordion title="geometry — report device parameters">
+    ```c
+    int (*geometry)(FAR struct inode *inode, FAR struct geometry *geometry);
+    ```
+
+    Fills in the `geometry` structure with current device parameters. This callback is called by file systems before mounting to determine sector size and capacity. It is the only callback that is effectively mandatory: without it, no file system can mount the device.
+
+    <ParamField path="inode" type="struct inode *" required>
+      The driver's inode.
+    </ParamField>
+    <ParamField path="geometry" type="struct geometry *" required>
+      Output structure to populate. All fields must be filled for a healthy device.
+    </ParamField>
+
+    Returns `0` on success or a negated `errno` value.
+  </Accordion>
+
+  <Accordion title="ioctl — device-specific control">
+    ```c
+    int (*ioctl)(FAR struct inode *inode, int cmd, unsigned long arg);
+    ```
+
+    Handles block-level ioctl commands such as `BIOC_XIPBASE` (get XIP base address) and `BIOC_PARTINFO`. Unrecognised commands should return `-ENOTTY`.
+
+    <ParamField path="inode" type="struct inode *" required>
+      The driver's inode.
+    </ParamField>
+    <ParamField path="cmd" type="int" required>
+      The ioctl command code.
+    </ParamField>
+    <ParamField path="arg" type="unsigned long" required>
+      Command-specific argument, often a pointer cast to `unsigned long`.
+    </ParamField>
+
+    Returns `0` on success, `-ENOTTY` for unsupported commands, or another negated `errno` on error.
+  </Accordion>
+
+  <Accordion title="unlink — inode removal notification">
+    ```c
+    int (*unlink)(FAR struct inode *inode);
+    ```
+
+    Only compiled when `CONFIG_DISABLE_PSEUDOFS_OPERATIONS` is not set. Called by the VFS when the inode's reference count drops to zero after `unregister_blockdriver()` has been called. Free the driver's private state here.
+
+    <ParamField path="inode" type="struct inode *" required>
+      The inode being removed.
+    </ParamField>
+
+    Returns `0` on success.
+  </Accordion>
+</AccordionGroup>
+
+## `struct geometry`
+
+File systems query device parameters through this structure (defined in `include/nuttx/fs/fs.h`):
+
+```c
+struct geometry
+{
+  bool      geo_available;    /* true: The device is available */
+  bool      geo_mediachanged; /* true: The media has changed since last query */
+  bool      geo_writeenabled; /* true: It is okay to write to this device */
+  blkcnt_t  geo_nsectors;     /* Number of sectors on the device */
+  blksize_t geo_sectorsize;   /* Size of one sector */
+};
+```
+
+<Tip>
+Set `geo_mediachanged` to `true` only once after the media actually changes (e.g. SD card swap). The file system clears its caches on seeing this flag and then re-queries geometry, so toggling it unnecessarily causes repeated remounts.
+</Tip>
+
+## Registration
+
+```c
+int register_blockdriver(FAR const char *path,
+                         FAR const struct block_operations *bops,
+                         mode_t mode,
+                         FAR void *priv);
+
+int unregister_blockdriver(FAR const char *path);
+```
+
+See [Driver registration and framework](/reference/driver-framework) for full parameter documentation and the driver lifecycle.
+
+## The MTD layer
+
+The Memory Technology Device (MTD) layer (`include/nuttx/mtd/mtd.h`) handles raw flash media that requires separate erase and write phases. An MTD driver is not a block driver itself; instead, helper wrappers such as `ftl_initialize()` (Flash Translation Layer) and `smart_initialize()` (SMART file system) convert an `mtd_dev_s` into a block device that can then be mounted normally.
+
+### `struct mtd_dev_s`
+
+```c
+struct mtd_dev_s
+{
+  int     (*erase)(FAR struct mtd_dev_s *dev, off_t startblock,
+                   size_t nblocks);
+
+  ssize_t (*bread)(FAR struct mtd_dev_s *dev, off_t startblock,
+                   size_t nblocks, FAR uint8_t *buffer);
+  ssize_t (*bwrite)(FAR struct mtd_dev_s *dev, off_t startblock,
+                    size_t nblocks, FAR const uint8_t *buffer);
+
+  /* Optional byte-oriented read */
+  ssize_t (*read)(FAR struct mtd_dev_s *dev, off_t offset,
+                  size_t nbytes, FAR uint8_t *buffer);
+
+  /* Optional byte-oriented write (CONFIG_MTD_BYTE_WRITE) */
+  ssize_t (*write)(FAR struct mtd_dev_s *dev, off_t offset,
+                   size_t nbytes, FAR const uint8_t *buffer);
+
+  int     (*ioctl)(FAR struct mtd_dev_s *dev, int cmd, unsigned long arg);
+
+  FAR const char *name;
+};
+```
+
+### `struct mtd_geometry_s`
+
+The MTD equivalent of `struct geometry`, returned via `MTDIOC_GEOMETRY`:
+
+```c
+struct mtd_geometry_s
+{
+  uint32_t blocksize;     /* Size of one read/write block */
+  uint32_t erasesize;     /* Size of one erase block (multiple of blocksize) */
+  uint32_t neraseblocks;  /* Number of erase blocks */
+};
+```
+
+### MTD ioctl commands
+
+| Command | Description |
+|---|---|
+| `MTDIOC_GEOMETRY` | Retrieve `struct mtd_geometry_s` |
+| `MTDIOC_BULKERASE` | Erase the entire device |
+| `MTDIOC_PROTECT` | Write-protect a region (`struct mtd_protect_s`) |
+| `MTDIOC_UNPROTECT` | Remove write protection from a region |
+| `MTDIOC_SETSPEED` | Set bus speed in Hz |
+| `MTDIOC_ECCSTATUS` | Query ECC status (`uint8_t *`) |
+| `MTDIOC_ERASESTATE` | Query the byte value of an erased cell |
+
+### MTD registration
+
+```c
+int register_mtddriver(FAR const char *path, FAR struct mtd_dev_s *mtd,
+                       mode_t mode, FAR void *priv);
+
+int unregister_mtddriver(FAR const char *path);
+```
+
+Requires `CONFIG_MTD`. The registered inode has type `FSNODEFLAG_TYPE_MTD` and is accessed through `inode->u.i_mtd`.
+
+## Example: minimal block driver skeleton
+
+The following shows the essential structure of a block driver. It follows the pattern used in `drivers/mmcsd/` (which contains `mmcsd_sdio.c`, `mmcsd_spi.c`, and `sdio.c`) and uses only real types from `include/nuttx/fs/fs.h`.
+
+```c
+#include <nuttx/config.h>
+#include <nuttx/fs/fs.h>
+#include <nuttx/kmalloc.h>
+#include <errno.h>
+
+/* Driver private state */
+struct myblock_dev_s
+{
+  /* ... hardware handles, mutexes, etc. ... */
+  bool     initialized;
+  uint32_t nsectors;
+  uint16_t sectorsize;
+};
+
+static int myblock_open(FAR struct inode *inode)
+{
+  FAR struct myblock_dev_s *priv = inode->i_private;
+  /* Power up hardware if needed */
+  return priv->initialized ? OK : -ENODEV;
+}
+
+static int myblock_close(FAR struct inode *inode)
+{
+  return OK;
+}
+
+static ssize_t myblock_read(FAR struct inode *inode,
+                             FAR unsigned char *buffer,
+                             blkcnt_t start_sector,
+                             unsigned int nsectors)
+{
+  FAR struct myblock_dev_s *priv = inode->i_private;
+  /* Issue hardware read command for nsectors starting at start_sector */
+  return nsectors; /* return number of sectors read */
+}
+
+static ssize_t myblock_write(FAR struct inode *inode,
+                              FAR const unsigned char *buffer,
+                              blkcnt_t start_sector,
+                              unsigned int nsectors)
+{
+  FAR struct myblock_dev_s *priv = inode->i_private;
+  /* Issue hardware write command */
+  return nsectors;
+}
+
+static int myblock_geometry(FAR struct inode *inode,
+                             FAR struct geometry *geometry)
+{
+  FAR struct myblock_dev_s *priv = inode->i_private;
+
+  geometry->geo_available    = true;
+  geometry->geo_mediachanged = false;
+  geometry->geo_writeenabled = true;
+  geometry->geo_nsectors     = priv->nsectors;
+  geometry->geo_sectorsize   = priv->sectorsize;
+  return OK;
+}
+
+static int myblock_ioctl(FAR struct inode *inode, int cmd, unsigned long arg)
+{
+  return -ENOTTY; /* No additional ioctls supported */
+}
+
+static const struct block_operations g_myblock_ops =
+{
+  myblock_open,     /* open     */
+  myblock_close,    /* close    */
+  myblock_read,     /* read     */
+  myblock_write,    /* write    */
+  myblock_geometry, /* geometry */
+  myblock_ioctl,    /* ioctl    */
+};
+
+int myblock_initialize(int minor)
+{
+  FAR struct myblock_dev_s *priv;
+  char devpath[16];
+  int ret;
+
+  priv = kmm_zalloc(sizeof(struct myblock_dev_s));
+  if (!priv)
+    {
+      return -ENOMEM;
+    }
+
+  priv->initialized = true;
+  priv->nsectors    = 4096;
+  priv->sectorsize  = 512;
+
+  snprintf(devpath, sizeof(devpath), "/dev/myblk%d", minor);
+  ret = register_blockdriver(devpath, &g_myblock_ops, 0755, priv);
+  if (ret < 0)
+    {
+      kmm_free(priv);
+    }
+
+  return ret;
+}
+```
+
+## See also
+
+<Columns cols={2}>
+  <Card title="Driver registration and framework" href="/reference/driver-framework" icon="layers">
+    Inode system, registration APIs, and the driver lifecycle.
+  </Card>
+  <Card title="Character driver API" href="/reference/character-drivers" icon="file-code">
+    `file_operations` reference for byte-stream devices.
+  </Card>
+  <Card title="Filesystem component" href="/components/filesystem" icon="folder">
+    File systems that mount on top of block drivers.
+  </Card>
+  <Card title="Writing device drivers" href="/guides/device-drivers" icon="wrench">
+    Practical guide with porting and testing advice.
+  </Card>
+</Columns>

@@ -1,0 +1,230 @@
+---
+title: "Driver registration and framework"
+description: "How NuttX drivers attach to the VFS as inodes, the character/block/special driver model, register_driver() API, and the full driver lifecycle."
+---
+
+NuttX integrates device drivers into the kernel through a pseudo-file system (VFS). Every driver — whether it controls a UART, a flash chip, or an LED — is represented as an **inode** in this in-memory tree. Applications open `/dev/somedevice` with the standard `open()` call; the VFS resolves the path to an inode, reads the driver type out of `i_flags`, and dispatches all subsequent calls through the function pointer table stored in the inode's `union inode_ops_u`. This design means drivers are completely decoupled from both the application and the underlying hardware: the upper half exposes a generic file-oriented interface while the lower half handles chip-specific details.
+
+<Note>
+The pseudo-file system is always enabled in NuttX. All driver registration APIs depend on it, so `CONFIG_DISABLE_PSEUDOFS_OPERATIONS` should not be set if you need `unlink` support on driver inodes.
+</Note>
+
+## Driver model overview
+
+NuttX recognises three primary driver classes, distinguished by the `i_flags` field of `struct inode`:
+
+| Flag constant | Value | Driver class | Registered via |
+|---|---|---|---|
+| `FSNODEFLAG_TYPE_DRIVER` | `0x01` | Character driver | `register_driver()` |
+| `FSNODEFLAG_TYPE_BLOCK` | `0x02` | Block driver | `register_blockdriver()` |
+| `FSNODEFLAG_TYPE_MTD` | `0x07` | MTD (raw flash) | `register_mtddriver()` |
+| `FSNODEFLAG_TYPE_MOUNTPT` | `0x03` | Mount point | `nx_mount()` |
+
+Most drivers you will write fall into **character** or **block** categories. Special types such as named semaphores (`FSNODEFLAG_TYPE_NAMEDSEM`), message queues, and shared memory regions are managed internally by the OS.
+
+### Upper half / lower half pattern
+
+As described in the NuttX driver documentation, drivers are typically split into two layers:
+
+- **Upper half** — registered with the VFS, implements the generic `file_operations` or `block_operations` vtable, enforces locking, and calls into the lower half.
+- **Lower half** — hardware-specific code, usually residing in `arch/` or `boards/`. It exposes a private callback table consumed exclusively by the upper half.
+
+## The inode structure
+
+Every registered driver occupies one `struct inode` node in the pseudo-file system tree (defined in `include/nuttx/fs/fs.h`):
+
+```c
+struct inode
+{
+  FAR struct inode *i_parent;   /* Link to parent level inode */
+  FAR struct inode *i_peer;     /* Link to same level inode */
+  FAR struct inode *i_child;    /* Link to lower level inode */
+  int16_t           i_crefs;    /* References to inode */
+  uint16_t          i_flags;    /* Flags for inode */
+  union inode_ops_u u;          /* Inode operations */
+  FAR void         *i_private;  /* Per inode driver private data */
+  char              i_name[1];  /* Name of inode (variable) */
+};
+```
+
+The `i_private` pointer is the primary way driver state is threaded through the system. You set it when calling `register_driver()` and retrieve it inside each callback via `filep->f_inode->i_private`.
+
+The `union inode_ops_u` selects which vtable applies:
+
+```c
+union inode_ops_u
+{
+  FAR const struct file_operations     *i_ops;   /* Character driver */
+  FAR const struct block_operations    *i_bops;  /* Block driver */
+  FAR struct mtd_dev_s                 *i_mtd;   /* MTD device */
+  FAR const struct mountpt_operations  *i_mops;  /* Mount point */
+};
+```
+
+## Registration functions
+
+### `register_driver()`
+
+Registers a character driver inode in the pseudo-file system.
+
+```c
+int register_driver(FAR const char *path,
+                    FAR const struct file_operations *fops,
+                    mode_t mode,
+                    FAR void *priv);
+```
+
+<AccordionGroup>
+  <Accordion title="path">
+    <ParamField path="path" type="const char *" required>
+      Absolute path at which to create the inode, e.g. `"/dev/mydevice"`. The path must begin with `/` and must not already exist. Returns `-EINVAL` if the path is malformed, `-EEXIST` if the inode is already present, or `-ENOMEM` on allocation failure.
+    </ParamField>
+  </Accordion>
+  <Accordion title="fops">
+    <ParamField path="fops" type="const struct file_operations *" required>
+      Pointer to a `file_operations` vtable with the driver's callback implementations. Any callbacks left `NULL` return `-ENOSYS` when called. The pointer must remain valid for the lifetime of the driver.
+    </ParamField>
+  </Accordion>
+  <Accordion title="mode">
+    <ParamField path="mode" type="mode_t" required>
+      POSIX permission bits for the inode, e.g. `0666`. Checked when `CONFIG_PSEUDOFS_ATTRIBUTES` is enabled.
+    </ParamField>
+  </Accordion>
+  <Accordion title="priv">
+    <ParamField path="priv" type="void *">
+      Opaque driver state pointer stored in `inode->i_private`. Retrieved later with `filep->f_inode->i_private` inside any callback. Pass `NULL` if you manage state through a global.
+    </ParamField>
+  </Accordion>
+</AccordionGroup>
+
+Returns `0` on success; a negated `errno` value on failure.
+
+---
+
+### `register_blockdriver()`
+
+Registers a block driver inode. Requires `CONFIG_DISABLE_MOUNTPOINT` to be unset.
+
+```c
+int register_blockdriver(FAR const char *path,
+                         FAR const struct block_operations *bops,
+                         mode_t mode,
+                         FAR void *priv);
+```
+
+<AccordionGroup>
+  <Accordion title="path">
+    <ParamField path="path" type="const char *" required>
+      Absolute path for the block device inode, e.g. `"/dev/mmcsd0"`. Same error codes as `register_driver()`.
+    </ParamField>
+  </Accordion>
+  <Accordion title="bops">
+    <ParamField path="bops" type="const struct block_operations *" required>
+      Pointer to a `block_operations` vtable. The `geometry` callback is required by most file systems; `read` and `write` are required for any mounted file system.
+    </ParamField>
+  </Accordion>
+  <Accordion title="mode">
+    <ParamField path="mode" type="mode_t" required>
+      POSIX permission bits.
+    </ParamField>
+  </Accordion>
+  <Accordion title="priv">
+    <ParamField path="priv" type="void *">
+      Opaque driver state stored in `inode->i_private`.
+    </ParamField>
+  </Accordion>
+</AccordionGroup>
+
+---
+
+### Unregistration
+
+```c
+int unregister_driver(FAR const char *path);
+int unregister_blockdriver(FAR const char *path);
+```
+
+Both functions remove the inode at `path` from the pseudo-file system. If any file descriptors are still open against the inode, the inode is marked with `FSNODEFLAG_DELETED` and physically removed only when the last reference drops. The optional `unlink` callback in `file_operations` is invoked at that point.
+
+<Warning>
+Always call `unregister_driver()` or `unregister_blockdriver()` before freeing any memory referenced by `i_private`. Failing to do so can cause a use-after-free when the OS later invokes a callback on the stale inode.
+</Warning>
+
+## The `file` structure
+
+When a task opens a driver, the VFS allocates a `struct file` and associates it with the inode:
+
+```c
+struct file
+{
+  int               f_oflags;   /* Open mode flags */
+  off_t             f_pos;      /* File position */
+  FAR struct inode *f_inode;    /* Driver or file system interface */
+  FAR void         *f_priv;     /* Per file driver private data */
+};
+```
+
+`f_priv` is per-open-instance state set by the driver's `open` callback and is distinct from `inode->i_private`, which is shared across all opens.
+
+## Driver lifecycle
+
+<Steps>
+  <Step title="Allocate driver state">
+    Allocate and initialise your driver's private state structure, typically with `kmm_zalloc()`.
+  </Step>
+  <Step title="Register the inode">
+    Call `register_driver()` (or `register_blockdriver()`) with the path, vtable, mode, and private pointer.
+  </Step>
+  <Step title="Handle opens">
+    In the `open` callback, allocate per-open state if needed and store it in `filep->f_priv`.
+  </Step>
+  <Step title="Service I/O">
+    Implement `read`, `write`, `ioctl`, and `poll` as required. Use `filep->f_inode->i_private` for shared driver state and `filep->f_priv` for per-fd state.
+  </Step>
+  <Step title="Handle close">
+    In the `close` callback, free per-open state and release any hardware resources that are not needed when no file descriptors are open.
+  </Step>
+  <Step title="Unregister on shutdown">
+    Call `unregister_driver()` to remove the inode. If the `unlink` callback is implemented, the OS calls it when the reference count reaches zero.
+  </Step>
+</Steps>
+
+## Inode flag reference
+
+These constants from `include/nuttx/fs/fs.h` are useful when inspecting or setting inode types programmatically:
+
+```c
+#define FSNODEFLAG_TYPE_MASK        0x0000000f
+#define   FSNODEFLAG_TYPE_PSEUDODIR 0x00000000  /* Pseudo directory (default) */
+#define   FSNODEFLAG_TYPE_DRIVER    0x00000001  /* Character driver           */
+#define   FSNODEFLAG_TYPE_BLOCK     0x00000002  /* Block driver               */
+#define   FSNODEFLAG_TYPE_MOUNTPT   0x00000003  /* Mount point                */
+#define   FSNODEFLAG_TYPE_NAMEDSEM  0x00000004  /* Named semaphore            */
+#define   FSNODEFLAG_TYPE_MQUEUE    0x00000005  /* Message queue              */
+#define   FSNODEFLAG_TYPE_SHM       0x00000006  /* Shared memory region       */
+#define   FSNODEFLAG_TYPE_MTD       0x00000007  /* Named MTD driver           */
+#define   FSNODEFLAG_TYPE_SOFTLINK  0x00000008  /* Soft link                  */
+#define   FSNODEFLAG_TYPE_SOCKET    0x00000009  /* Socket                     */
+#define FSNODEFLAG_DELETED          0x00000010  /* Unlinked, pending removal  */
+```
+
+<Tip>
+Use the provided `INODE_IS_DRIVER(i)`, `INODE_IS_BLOCK(i)`, and `INODE_SET_DRIVER(i)` macros rather than manipulating `i_flags` directly; they isolate the type field correctly.
+</Tip>
+
+## See also
+
+<Columns cols={2}>
+  <Card title="Character driver API" href="/reference/character-drivers" icon="file-code">
+    Complete `file_operations` reference with callback signatures and a minimal driver skeleton.
+  </Card>
+  <Card title="Block driver API" href="/reference/block-drivers" icon="hard-drive">
+    `block_operations` struct, geometry ioctl, and MTD layer details.
+  </Card>
+  <Card title="Device drivers overview" href="/components/drivers" icon="cpu">
+    High-level guide to all driver classes supported by NuttX.
+  </Card>
+  <Card title="Porting guide" href="/guides/device-drivers" icon="wrench">
+    Step-by-step instructions for writing a new device driver.
+  </Card>
+</Columns>

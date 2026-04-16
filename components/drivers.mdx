@@ -1,0 +1,209 @@
+---
+title: "NuttX device driver framework"
+description: "NuttX device drivers: character vs block, VFS integration, upper/lower-half model, driver registration, ioctl dispatch, and supported peripheral categories."
+---
+
+The NuttX device driver framework is built on top of the VFS pseudo-filesystem. Every driver—whether it controls a serial port, an SPI bus, a CAN controller, or a sensor—is registered as a file-system node under `/dev` and accessed with the standard POSIX file operations `open()`, `read()`, `write()`, `ioctl()`, and `close()`. This design means application code needs no driver-specific header: if you can open a path, you can talk to the hardware. Drivers are divided into two kinds (character and block) and are further structured into an **upper half** (portable, POSIX-facing) and a **lower half** (hardware-specific), which keeps board bring-up code minimal.
+
+## Driver type comparison
+
+| | Character driver | Block driver |
+|-|-----------------|--------------|
+| Registration function | `register_driver()` | `register_blockdriver()` |
+| VFS node type | Character device | Block device |
+| Access granularity | Byte stream / ioctl | Fixed-size sectors |
+| Typical users | UART, SPI, I2C, ADC, sensors | MMC/SD, NAND, RAM disk |
+| Filesystem mounting | Not mountable directly | Mountable with `mount()` |
+
+## Upper-half / lower-half architecture
+
+NuttX drivers are split into two layers as described in `Documentation/components/drivers/index.rst`:
+
+```
+Application (open / read / write / ioctl)
+          │
+          ▼
+  ┌───────────────────┐
+  │   Upper half      │  register_driver() or register_blockdriver()
+  │  (portable code)  │  implements file_operations: open/read/write/ioctl
+  └────────┬──────────┘
+           │  calls lower-half ops struct (e.g. uart_ops_s, spi_ops_s)
+           ▼
+  ┌───────────────────┐
+  │   Lower half      │  hardware-specific, lives in arch/ or boards/
+  │  (board/SoC code) │  STM32 UART, i.MX RT SPI, etc.
+  └───────────────────┘
+```
+
+## Registering a character driver
+
+```c
+#include <nuttx/fs/fs.h>
+
+/* Define the file operations for the driver */
+static const struct file_operations g_mydrv_fops =
+{
+  mydrv_open,    /* open  */
+  mydrv_close,   /* close */
+  mydrv_read,    /* read  */
+  mydrv_write,   /* write */
+  NULL,          /* seek  */
+  mydrv_ioctl,   /* ioctl */
+  NULL,          /* poll  */
+};
+
+/* Register under /dev/mydrv0 */
+int ret = register_driver("/dev/mydrv0", &g_mydrv_fops, 0666, priv);
+```
+
+For block devices use `register_blockdriver()` with a `struct block_operations` instead.
+
+## The ioctl pattern
+
+Every driver subsystem gets its own base address in `include/nuttx/fs/ioctl.h` so command numbers never collide:
+
+```c
+/* From include/nuttx/fs/ioctl.h (first 60 lines) */
+#define _TIOCBASE   (0x0100)  /* Terminal I/O ioctl commands  */
+#define _WDIOCBASE  (0x0200)  /* Watchdog driver ioctl        */
+#define _FIOCBASE   (0x0300)  /* File system ioctl            */
+#define _DIOCBASE   (0x0400)  /* Character driver ioctl       */
+#define _BIOCBASE   (0x0500)  /* Block driver ioctl           */
+#define _MTDIOCBASE (0x0600)  /* MTD ioctl                    */
+#define _SIOCBASE   (0x0700)  /* Socket ioctl                 */
+#define _ANIOCBASE  (0x0b00)  /* Analog (DAC/ADC) ioctl       */
+#define _PWMIOCBASE (0x0c00)  /* PWM ioctl                    */
+#define _SNIOCBASE  (0x0a00)  /* Sensor ioctl                 */
+```
+
+Application code issues `ioctl()` calls using the command constants defined for each subsystem:
+
+```c
+#include <nuttx/analog/adc.h>
+
+int fd = open("/dev/adc0", O_RDONLY);
+
+/* Trigger a conversion */
+ioctl(fd, ANIOC_TRIGGER, 0);
+
+/* Read result */
+struct adc_msg_s sample;
+read(fd, &sample, sizeof(sample));
+close(fd);
+```
+
+## Driver categories
+
+<CardGroup cols={2}>
+  <Card title="Serial (UART/USART)" href="/reference/character-drivers">
+    Full-duplex byte-stream drivers. Upper half in `drivers/serial/`; lower half per-SoC. Accessed as `/dev/ttyS0`, `/dev/console`, etc. Supports DMA, flow control, and RS-485.
+  </Card>
+  <Card title="SPI bus" href="/reference/character-drivers">
+    Master and slave SPI drivers (`drivers/spi/`). Upper half exposes `struct spi_dev_s`; lower half is chip-specific. SPI device drivers (sensors, flash) sit above the bus driver.
+  </Card>
+  <Card title="I2C bus" href="/reference/character-drivers">
+    I2C master drivers (`drivers/i2c/`). The character interface `/dev/i2c0` accepts `struct i2c_transfer_s` via ioctl `I2CIOC_TRANSFER`.
+  </Card>
+  <Card title="CAN bus" href="/reference/character-drivers">
+    CAN 2.0A/B controller drivers (`drivers/can/`). Frames are read/written as `struct can_msg_s`. Supports hardware message filtering.
+  </Card>
+  <Card title="USB device & host" href="/guides/usb">
+    Gadget-style USB device (`drivers/usbdev/`) and host controller (`drivers/usbhost/`) frameworks. Class drivers: CDC/ACM, mass storage, HID, RNDIS, DFU.
+  </Card>
+  <Card title="GPIO / IO expander" href="/reference/driver-framework">
+    GPIO character driver (`drivers/ioexpander/`) provides `/dev/gpio0`. Supports input, output, interrupt, and open-drain modes via `GPIOC_*` ioctl commands.
+  </Card>
+  <Card title="ADC / DAC" href="/reference/character-drivers">
+    Analog conversion drivers (`drivers/analog/`). ADC results are read as `struct adc_msg_s`; DAC samples are written as `struct dac_msg_s`. Triggered via `ANIOC_TRIGGER`.
+  </Card>
+  <Card title="PWM" href="/reference/character-drivers">
+    Pulse-width modulation driver (`drivers/timers/pwm.c`). Configure frequency and duty cycle with `PWMIOC_SETCHARACTERISTICS`, start/stop with `PWMIOC_START` / `PWMIOC_STOP`.
+  </Card>
+  <Card title="Sensors" href="/reference/driver-framework">
+    Unified sensor framework (`drivers/sensors/`). Accelerometers, gyroscopes, magnetometers, barometers, and more. Data returned as typed `struct sensor_event_*` structures.
+  </Card>
+  <Card title="MMC/SD storage" href="/reference/block-drivers">
+    Generic SPI-SDIO MMC/SD stack (`drivers/mmcsd/`). Registers as `/dev/mmcsd0`; mountable with any filesystem. Handles SDHC and SDXC cards.
+  </Card>
+  <Card title="MTD (flash)" href="/reference/block-drivers">
+    Memory Technology Device layer (`drivers/mtd/`). Abstracts NOR/NAND flash erase, read, write. Used by LittleFS, SPIFFS, NXFFS, and FTL.
+  </Card>
+  <Card title="Watchdog timer" href="/reference/character-drivers">
+    Watchdog drivers (`drivers/timers/`). Controlled via `WDIOC_*` ioctl commands. Keepalive must be sent within the configured timeout or the system resets.
+  </Card>
+</CardGroup>
+
+## Complete driver registration example (character)
+
+The following skeleton shows a minimal sensor character driver following the NuttX upper/lower-half pattern:
+
+```c
+#include <nuttx/config.h>
+#include <nuttx/fs/fs.h>
+#include <nuttx/kmalloc.h>
+#include <fcntl.h>
+#include <errno.h>
+
+struct mysen_dev_s
+{
+  FAR struct mysen_lowerhalf_s *lower;  /* lower-half ops */
+};
+
+static ssize_t mysen_read(FAR struct file *filep,
+                          FAR char *buf, size_t len)
+{
+  FAR struct mysen_dev_s *priv = filep->f_priv;
+  return priv->lower->read(priv->lower, buf, len);
+}
+
+static int mysen_ioctl(FAR struct file *filep,
+                       int cmd, unsigned long arg)
+{
+  switch (cmd)
+    {
+      case SNIOC_READDATA:
+        /* handle sensor-specific command */
+        break;
+      default:
+        return -ENOTTY;
+    }
+  return OK;
+}
+
+static const struct file_operations g_mysen_fops =
+{
+  NULL,         /* open  */
+  NULL,         /* close */
+  mysen_read,   /* read  */
+  NULL,         /* write */
+  NULL,         /* seek  */
+  mysen_ioctl,  /* ioctl */
+  NULL,         /* poll  */
+};
+
+int mysen_register(FAR const char *devpath,
+                   FAR struct mysen_lowerhalf_s *lower)
+{
+  FAR struct mysen_dev_s *priv =
+      kmm_zalloc(sizeof(struct mysen_dev_s));
+  if (!priv) return -ENOMEM;
+
+  priv->lower = lower;
+  return register_driver(devpath, &g_mysen_fops, 0444, priv);
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="Driver framework reference" href="/reference/driver-framework">
+    Detailed API for file_operations, register_driver, and ioctl base addresses.
+  </Card>
+  <Card title="Writing a device driver guide" href="/guides/device-drivers">
+    Step-by-step guide to porting or writing a new NuttX driver.
+  </Card>
+  <Card title="Block driver reference" href="/reference/block-drivers">
+    block_operations structure and register_blockdriver() API.
+  </Card>
+  <Card title="Filesystem layer" href="/components/filesystem">
+    How drivers appear in the VFS and are accessed by applications.
+  </Card>
+</CardGroup>

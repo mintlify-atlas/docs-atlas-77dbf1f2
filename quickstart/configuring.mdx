@@ -1,0 +1,204 @@
+---
+title: "Configure NuttX for your board"
+description: "Select a board and configuration using tools/configure.sh, then customise the build with menuconfig, Kconfig options, and defconfig files."
+---
+
+NuttX is highly configurable: nearly every feature, driver, and subsystem can be compiled in or out. The configuration system is based on Linux's Kconfig tooling, which stores settings in a `.config` file and exposes them through interactive menu frontends. Before building, you must initialise a configuration for your specific board using one of the provided canned (pre-made) configurations as a starting point.
+
+## Understand the configuration layout
+
+Canned configurations are stored in the source tree at:
+
+```
+boards/<arch-name>/<chip-name>/<board-name>/configs/<config-dir>/
+```
+
+For example, the NuttShell configuration for the i.MX RT 1060 evaluation kit lives at:
+
+```
+boards/arm/imxrt/imxrt1060-evk/configs/nsh/
+```
+
+Available i.MX RT boards in the `boards/arm/imxrt/` directory include:
+
+- `imxrt1020-evk`
+- `imxrt1050-evk`
+- `imxrt1060-evk`
+- `imxrt1064-evk`
+- `imxrt1170-evk`
+- `teensy-4.x`
+
+Each configuration directory contains a compressed `defconfig` file (and usually a `Make.defs` file). The `configure.sh` script copies these files into the top-level NuttX directory and expands the configuration.
+
+## List available configurations
+
+To see every board and configuration available in your checkout:
+
+```bash
+cd nuttx
+./tools/configure.sh -L | less
+```
+
+Output lines are in `<board-name>:<config-dir>` format, for example:
+
+```
+imxrt1060-evk:nsh
+imxrt1060-evk:netnsh
+teensy-4.x:nsh
+stm32f4discovery:nsh
+sim:nsh
+```
+
+## Apply a configuration
+
+<Steps>
+  <Step title="Run configure.sh with your board and host platform">
+    Pass the `<board-name>:<config-dir>` pair and a host platform flag. Use `-l` for Linux, `-c` for Windows/Cygwin, or `-g` for MSYS/MSYS2:
+
+    ```bash
+    cd nuttx
+
+    # Linux host
+    ./tools/configure.sh -l imxrt1060-evk:nsh
+
+    # macOS host (no platform flag needed; omit -l/-c/-g)
+    ./tools/configure.sh imxrt1060-evk:nsh
+
+    # Windows/Cygwin host
+    ./tools/configure.sh -c imxrt1060-evk:nsh
+    ```
+
+    On Windows in a native console (not Cygwin or MSYS), use the batch file instead:
+
+    ```batch
+    tools\configure.bat imxrt1060-evk:nsh
+    ```
+
+    The script copies `Make.defs` and `defconfig` (as `.config`) into the NuttX top-level directory.
+  </Step>
+  <Step title="Refresh the configuration">
+    Because NuttX stores only compressed defconfig files in the repository, the `.config` must be expanded and reconciled with the current Kconfig files before building. Run:
+
+    ```bash
+    make olddefconfig
+    ```
+
+    This restores all settings that were stripped from the defconfig to their defaults. If you want to be prompted about each new or changed option instead, use:
+
+    ```bash
+    make oldconfig
+    ```
+
+    <Warning>
+      Skipping this step after `configure.sh` is a common mistake. The build may succeed but the resulting binary may be incomplete or non-functional because many default values have not been applied.
+    </Warning>
+  </Step>
+</Steps>
+
+## Customise with menuconfig
+
+The interactive menu system lets you browse and change every Kconfig option. Launch it with:
+
+```bash
+make menuconfig
+```
+
+You will see an ncurses-based menu. The basic configuration order is bottom-up:
+
+1. Select the build environment (host platform)
+2. Select the processor architecture
+3. Select the board
+4. Enable supported peripherals
+5. Configure device drivers
+6. Configure application options
+
+Useful keyboard shortcuts inside `menuconfig`:
+
+| Key | Action |
+|-----|--------|
+| `?` | Show help for the highlighted option |
+| `/` | Search for a configuration symbol by name |
+| `Z` | Reveal hidden options whose dependencies are not yet met |
+| Arrow keys | Navigate menus |
+| Space | Toggle a boolean option |
+| Enter | Enter a submenu |
+
+### Alternative menu frontends
+
+| Target | Frontend |
+|--------|----------|
+| `make menuconfig` | `kconfig-mconf` (ncurses, standard) |
+| `make nconfig` | `kconfig-nconf` (ncurses, alternative UI) |
+| `make qconfig` | `kconfig-qconf` (Qt graphical) |
+| `make gconfig` | `kconfig-gconf` (GTK graphical) |
+
+<Warning>
+  Never run `make menuconfig` on a legacy (pre-NuttX 7.0) manual configuration. Doing so will corrupt the configuration. All configurations in the current repository use the `kconfig-frontends` format.
+</Warning>
+
+## Make quick changes with kconfig-tweak
+
+If you know the exact `CONFIG_` symbol you want to change, `kconfig-tweak` (part of the `kconfig-frontends` package) is faster than the menu:
+
+```bash
+kconfig-tweak --enable CONFIG_DEBUG_NET
+make olddefconfig   # always run after kconfig-tweak to reconcile dependencies
+
+kconfig-tweak --disable CONFIG_DEBUG_NET
+make olddefconfig
+```
+
+This is especially useful for scripting configuration changes in CI or test scripts.
+
+## Save a custom defconfig
+
+After tuning your configuration, you can generate a compact defconfig that contains only the settings that differ from Kconfig defaults:
+
+```bash
+make savedefconfig
+```
+
+This produces a `defconfig` file in the top-level directory. The size reduction is significant — a `.config` of ~1085 lines typically compresses to ~82 lines. To later restore a full `.config` from this compressed form, run `make olddefconfig` after placing the defconfig at `.config`.
+
+<Note>
+  All defconfig files committed to the NuttX repository must use the compressed format produced by `make savedefconfig`. Uncompressed `.config` files are not accepted in pull requests.
+</Note>
+
+## Adapt a configuration for a different host
+
+Saved configurations carry their original host platform setting. To switch a configuration to your current host without going through the full menuconfig:
+
+```bash
+# Switch to Linux
+tools/sethost.sh -l
+
+# Switch to Windows/Cygwin (64-bit)
+tools/sethost.sh -c
+
+# Switch to MSYS/MSYS2
+tools/sethost.sh -g
+
+# See all options
+tools/sethost.sh -h
+```
+
+## Compare two configurations
+
+The `cmpconfig` tool (built from `tools/cmpconfig.c`) shows only the meaningful differences between two `.config` files, filtering out noise:
+
+```bash
+cd nuttx/tools
+make -f Makefile.host     # builds cmpconfig
+./cmpconfig ../config-a ..config-b
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Build NuttX firmware" icon="hammer" href="/quickstart/building">
+    Run `make` to compile the configured firmware into ELF and binary output files.
+  </Card>
+  <Card title="Run NuttX on hardware" icon="microchip" href="/quickstart/running">
+    Flash your compiled binary to a board and connect to the NuttShell over serial.
+  </Card>
+</CardGroup>

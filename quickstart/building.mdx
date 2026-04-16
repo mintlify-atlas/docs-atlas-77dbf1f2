@@ -1,0 +1,167 @@
+---
+title: "Build NuttX firmware"
+description: "Compile NuttX with make, understand build targets and verbosity options, manage cross-compilation toolchains, and locate the output binary files."
+---
+
+Once you have applied and refreshed a board configuration, building NuttX is straightforward. The build system operates in-place inside the source tree — no separate build directory is needed. This page covers running `make`, the available build targets, toolchain selection, and where to find the output files after a successful build.
+
+## Prerequisites
+
+Before running `make`, ensure you have:
+
+1. Cloned both the `nuttx/` and `apps/` repositories as siblings (see [Get started with PX4 NuttX](/quickstart/install)).
+2. Applied a board configuration with `tools/configure.sh` and run `make olddefconfig` (see [Configure NuttX for your board](/quickstart/configuring)).
+3. Set your cross-compiler on `PATH`. The exact binary prefix depends on your target architecture (e.g., `arm-none-eabi-` for ARM Cortex-M).
+
+<Note>
+  Each board's `boards/<arch>/<chip>/<board>/README.txt` file contains specific toolchain recommendations and any extra command-line arguments required for that target.
+</Note>
+
+## Build the firmware
+
+From the top-level `nuttx/` directory, simply run:
+
+```bash
+cd nuttx
+make
+```
+
+The build compiles all source files, links the OS and application code, and generates the output in the `nuttx/` directory. A successful build produces at least:
+
+- `nuttx` — ELF file with debug symbols, suitable for `gdb`
+- `nuttx.bin` — raw binary, suitable for flashing to the board
+
+To speed up the build on a multi-core machine, pass the parallel jobs flag:
+
+```bash
+make -j$(nproc)
+```
+
+## Build targets
+
+The top-level `Makefile` delegates to `tools/Unix.mk` (or `tools/Win.mk` on native Windows). The following targets are available:
+
+| Target | Description |
+|--------|-------------|
+| `all` | Default target. Builds the NuttX executable in all selected output formats. |
+| `clean` | Removes derived object files, archives, and executables. Retains configuration and context files. |
+| `distclean` | Performs `clean` and also removes all configuration and context files, restoring the tree to its original unconfigured state. |
+| `apps_clean` | Runs `clean` only in the user application directory. |
+| `apps_distclean` | Runs `distclean` only in the application directory. The `apps/.config` file is preserved. |
+| `export` | Packages NuttX libraries and header files into an exportable archive. |
+| `flash` | Rebuilds NuttX and flashes it to the target in one step. Requires a `FLASH` command defined in `Make.defs`. |
+| `menuconfig` | Opens the interactive Kconfig menu system. |
+| `oldconfig` | Refreshes `.config`, prompting for any new or changed options. |
+| `olddefconfig` | Refreshes `.config`, accepting all defaults without prompting. |
+| `savedefconfig` | Generates a compressed `defconfig` from the current `.config`. |
+| `depend` | Creates build dependency files. |
+| `context` | Sets up symbolic links and generates `include/nuttx/config.h`. Invoked automatically. |
+| `clean_context` | Removes context files created by `context`. |
+
+## Build options
+
+Override any Make variable on the command line. The most useful option is the verbosity flag:
+
+```bash
+make V=1
+```
+
+With `V=1`, the exact compiler and linker invocations are printed. This is invaluable when debugging include path problems, unexpected flags, or missing symbols.
+
+To override the cross-compiler prefix (for example when the Makefile selects the wrong prefix):
+
+```bash
+make CROSSDEV=arm-nuttx-eabi-
+```
+
+## Rebuilding
+
+Incremental rebuilds work correctly — just run `make` again after editing source files. The dependency system will recompile only what changed.
+
+When using a Windows native toolchain under Cygwin, copied directories (used in place of symbolic links) can get out of sync. In that case, force a clean rebuild of the context:
+
+```bash
+make clean_context all
+```
+
+## Cross-compilation toolchains
+
+NuttX targets a wide range of CPU architectures. Select the toolchain appropriate for your board:
+
+<Tabs>
+  <Tab title="ARM Cortex-M (most common)">
+    The standard bare-metal ARM toolchain:
+
+    ```bash
+    # Ubuntu/Debian
+    sudo apt install gcc-arm-none-eabi binutils-arm-none-eabi
+
+    # From arm.com (latest)
+    curl -L -O https://developer.arm.com/-/media/Files/downloads/gnu-rm/9-2019q4/gcc-arm-none-eabi-9-2019-q4-major-x86_64-linux.tar.bz2
+    tar xf gcc-arm-none-eabi-9-2019-q4-major-x86_64-linux.tar.bz2
+    export PATH=/opt/gcc/gcc-arm-none-eabi-9-2019-q4-major/bin:$PATH
+    ```
+
+    Toolchain prefix: `arm-none-eabi-`
+  </Tab>
+  <Tab title="NuttX Buildroot toolchain">
+    A custom toolchain that includes NuttX header files and related support tools (`kconfig-frontends`, `genromfs`, NXFLAT tools). Build it from the NuttX buildroot repository:
+
+    ```bash
+    git clone https://bitbucket.org/nuttx/buildroot.git
+    cd buildroot
+    # See buildroot/boards/README.txt for build instructions
+    ```
+
+    For Cortex-M3/4, choose between OABI (`arm-nuttx-elf-`) and EABI (`arm-nuttx-eabi-`) variants. Set `CONFIG_ARMV7M_OABI_TOOLCHAIN=y` in `.config` if using the older OABI toolchain.
+  </Tab>
+  <Tab title="Simulator (host compiler)">
+    The `sim` configuration compiles NuttX as a Linux or macOS process using the host GCC:
+
+    ```bash
+    # No cross-compiler needed; uses system gcc
+    ./tools/configure.sh -l sim:nsh
+    make
+    ./nuttx
+    ```
+
+    On macOS, the `x86_64-elf-gcc` Homebrew package is required for ELF output.
+  </Tab>
+</Tabs>
+
+<Tip>
+  The NuttX CI helper script at `tools/ci/cibuild.sh` and the CI Docker container at `tools/ci/docker/linux/Dockerfile` contain toolchain installation instructions for every supported architecture.
+</Tip>
+
+## Native Windows build
+
+NuttX supports building from a native Windows console (`cmd.exe`) when `CONFIG_WINDOWS_NATIVE=y` is set in `.config`. This build uses `tools/Win.mk`, Windows-style paths, and requires GNUWin32 tools available from [gnuwin32.sourceforge.net](http://gnuwin32.sourceforge.net/) and MinGW GCC from [mingw.org](http://www.mingw.org/).
+
+<Warning>
+  The native Windows build is less commonly tested than the Linux/Cygwin builds. Prefer Cygwin, MSYS2, or WSL unless you have a specific reason to use the native build.
+</Warning>
+
+## Locating output files
+
+After a successful build, output files are in the `nuttx/` directory:
+
+```
+nuttx/
+├── nuttx          # ELF with debug symbols (use with gdb)
+├── nuttx.bin      # Raw binary for direct flashing
+├── nuttx.hex      # Intel HEX format (some flashers require this)
+└── nuttx.map      # Linker map file
+```
+
+The exact set of output files depends on the board's `Make.defs` configuration.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Run NuttX on hardware" icon="microchip" href="/quickstart/running">
+    Flash the binary to your board and connect to the interactive NuttShell console.
+  </Card>
+  <Card title="Debug NuttX applications" icon="bug" href="/quickstart/debugging">
+    Use GDB over OpenOCD or J-Link to set breakpoints and inspect running tasks.
+  </Card>
+</CardGroup>

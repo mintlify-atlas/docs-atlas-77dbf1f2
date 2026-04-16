@@ -1,0 +1,288 @@
+---
+title: "Port NuttX to a new board"
+description: "Step-by-step guide to bringing up NuttX on a new board: directory structure, required files, arch vs board code, and first-boot testing."
+---
+
+Porting NuttX to a new board involves creating a layered set of configuration files and source modules that describe your hardware to the OS. NuttX separates concerns across three layers — processor architecture, chip/SoC, and board — so you only write what is unique to your hardware. This guide walks through creating that structure from scratch, wiring up the required initialization hooks, and verifying the port boots to an NSH prompt.
+
+## Architecture overview
+
+NuttX organises hardware support across three directories:
+
+| Layer | Location | Responsibility |
+|---|---|---|
+| Architecture | `arch/<arch>/` | CPU registers, context switch, interrupts, MMU |
+| Chip/SoC | `arch/<arch>/src/<chip>/` | Peripheral IP blocks, clocks, GPIO, UART, USB |
+| Board | `boards/<arch>/<chip>/<board>/` | Schematic-level wiring, LED pins, external peripherals |
+
+The `boards/` tree is what you create for a new board. The arch and chip layers are usually shared with an existing port.
+
+## Board directory structure
+
+Every board directory follows this layout (from `boards/README.txt`):
+
+```text
+boards/<arch>/<chip>/<board>/
+├── README.txt
+├── Kconfig
+├── include/
+│   └── board.h          # board-specific header
+├── src/
+│   ├── Makefile
+│   └── <board>_init.c   # board initialization source
+└── <config>/            # one sub-directory per configuration
+    ├── Make.defs
+    └── defconfig
+```
+
+A board can expose multiple configurations (`nsh`, `ostest`, `usb`, etc.). Each configuration is a self-contained pair of files.
+
+<Steps>
+
+<Step title="Create the board directory tree">
+
+Replace `<arch>`, `<chip>`, and `<board>` with your values. For example, a new STM32F4 board would live under `boards/arm/stm32/myboard/`.
+
+```bash
+mkdir -p boards/<arch>/<chip>/<board>/include
+mkdir -p boards/<arch>/<chip>/<board>/src
+mkdir -p boards/<arch>/<chip>/<board>/nsh
+```
+
+Common `<arch>` values: `arm`, `xtensa`, `risc-v`, `mips`, `sim`.
+
+</Step>
+
+<Step title="Create Make.defs">
+
+`Make.defs` is a makefile fragment included by every other makefile in the build. It defines the toolchain and compiler flags.
+
+```makefile
+# boards/<arch>/<chip>/<board>/nsh/Make.defs
+include $(TOPDIR)/.config
+include $(TOPDIR)/tools/Config.mk
+include $(TOPDIR)/arch/arm/src/armv7-m/Toolchain.defs
+
+LDSCRIPT = ld.script
+
+ifeq ($(WINTOOL),y)
+  ARCHSCRIPT = -T "${shell cygpath -w $(BOARD_DIR)$(DELIM)scripts$(DELIM)$(LDSCRIPT)}"
+else
+  ARCHSCRIPT = -T$(BOARD_DIR)/scripts/$(LDSCRIPT)
+endif
+
+ARCHCPUFLAGS = -mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard
+MAXOPTIMIZATION = -Os
+
+CFLAGS := $(ARCHCPUFLAGS) $(ARCHOPTIMIZATION) $(ARCHCFLAGS) $(ARCHINCLUDES) \
+          $(ARCHDEFINES) $(EXTRAFLAGS)
+CXXFLAGS := $(ARCHCPUFLAGS) $(ARCHOPTIMIZATION) $(ARCHCXXFLAGS) \
+            $(ARCHXXINCLUDES) $(ARCHDEFINES) $(EXTRAFLAGS)
+CPPFLAGS := $(ARCHINCLUDES) $(ARCHDEFINES) $(EXTRAFLAGS)
+AFLAGS := $(CFLAGS) -D__ASSEMBLY__
+```
+
+The `Make.defs` file must define at minimum: `CC`, `LD`, `AR`, `NM`, `OBJCOPY`, `OBJDUMP`, and the associated flags.
+
+</Step>
+
+<Step title="Create defconfig">
+
+`defconfig` is a Kconfig-format configuration file. Start from the closest existing board's defconfig and trim it down.
+
+```kconfig
+# boards/<arch>/<chip>/<board>/nsh/defconfig
+
+CONFIG_ARCH="arm"
+CONFIG_ARCH_BOARD="myboard"
+CONFIG_ARCH_BOARD_MYBOARD=y
+CONFIG_ARCH_CHIP="stm32"
+CONFIG_ARCH_CHIP_STM32F407VG=y
+CONFIG_ARCH_CORTEXM4=y
+CONFIG_ARCH_FPU=y
+
+CONFIG_SYSTEM_NSH=y
+CONFIG_NSH_ARCHINIT=y
+
+CONFIG_USART2_SERIAL_CONSOLE=y
+CONFIG_USART2_BAUD=115200
+CONFIG_USART2_BITS=8
+CONFIG_USART2_PARITY=0
+CONFIG_USART2_2STOP=0
+
+CONFIG_BOARD_LOOPSPERMSEC=16717
+```
+
+<Note>
+`CONFIG_BOARD_LOOPSPERMSEC` controls the busy-wait calibration used before the tick timer starts. Set it based on your CPU frequency and measure it with the `ostest` configuration later.
+</Note>
+
+</Step>
+
+<Step title="Add a Kconfig file">
+
+Each board must declare its own `Kconfig` so `menuconfig` can display it.
+
+```kconfig
+# boards/<arch>/<chip>/<board>/Kconfig
+
+if ARCH_BOARD_MYBOARD
+
+config MYBOARD_LED_COUNT
+	int "Number of user LEDs"
+	default 4
+
+endif # ARCH_BOARD_MYBOARD
+```
+
+The top-level symbol (`ARCH_BOARD_MYBOARD`) is selected automatically by the build system when your board is chosen.
+
+</Step>
+
+<Step title="Implement board initialization">
+
+NuttX calls three board-level hooks at different points during startup, as documented in `include/nuttx/board.h`:
+
+```c
+/* boards/<arch>/<chip>/<board>/src/myboard_init.c */
+
+#include <nuttx/config.h>
+#include <nuttx/board.h>
+#include <arch/board/board.h>
+
+/* Called from arch power-on reset logic before the OS starts.
+ * Only very low-level hardware setup is safe here — no OS services. */
+void stm32_board_initialize(void)
+{
+  /* Configure GPIO pins, set up clocks, init DRAM if needed */
+  stm32_configgpio(GPIO_USART2_TX);
+  stm32_configgpio(GPIO_USART2_RX);
+}
+
+/* Called after up_initialize() when CONFIG_BOARD_EARLY_INITIALIZE=y.
+ * Most simple device drivers can be initialized here. */
+void board_early_initialize(void)
+{
+  /* Register UART, SPI, I2C drivers */
+}
+
+/* Called just before the main application starts when
+ * CONFIG_BOARD_LATE_INITIALIZE=y. Waiting on events is allowed here. */
+void board_late_initialize(void)
+{
+  /* Mount filesystems, initialize SD card, start USB, etc. */
+}
+```
+
+<Warning>
+Do not call OS services (memory allocation, semaphores, device I/O) from `stm32_board_initialize()`. The scheduler has not started at that point. Use `board_early_initialize()` or `board_late_initialize()` instead.
+</Warning>
+
+</Step>
+
+<Step title="Wire up the arch-level API">
+
+The architecture layer (`arch/<arch>/src/`) exposes a fixed API to the OS. The most important entry point is `up_initialize()`, which is called once after basic OS services are available. It is **not** board-specific — but it calls your board hooks:
+
+Key arch-level functions your chip layer must implement:
+
+| Function | Purpose |
+|---|---|
+| `up_initialize(void)` | Called once; sets up IRQs, clock, registers drivers |
+| `up_idle(void)` | Runs when no other task is ready (power management) |
+| `up_initial_state(tcb)` | Initializes CPU registers for a new thread |
+| `up_interrupt_context(void)` | Returns `true` if called from an ISR |
+| `up_putc(int ch)` | Early console output before UART driver starts |
+
+These are already implemented for most ARM Cortex-M chips. You typically only need to supply board-level wrappers.
+
+### Interrupt management
+
+Within `up_initialize()` and your peripheral initialization code, use `irq_attach()` to connect a hardware interrupt to a service routine, then `up_enable_irq()` to unmask it:
+
+```c
+#include <nuttx/irq.h>
+
+/* Attach ISR to IRQ number (defined by your chip header) */
+irq_attach(MY_PERIPHERAL_IRQ, my_peripheral_isr, NULL);
+up_enable_irq(MY_PERIPHERAL_IRQ);
+```
+
+The function signature is:
+
+```c
+int irq_attach(int irq, xcpt_t isr, FAR void *arg);
+```
+
+- `irq` — IRQ number from your chip's `<arch/chip/irq.h>` header
+- `isr` — Interrupt service routine of type `int (*)(int irq, FAR void *context, FAR void *arg)`
+- `arg` — Opaque pointer passed to the ISR as its third argument
+
+To detach an ISR, call `irq_detach(irq)` (which is a macro that calls `irq_attach(irq, NULL, NULL)`). ISRs run with interrupts disabled and must not call blocking functions.
+
+</Step>
+
+<Step title="Configure and build">
+
+Use the `configure.sh` script to install your board's Make.defs and defconfig:
+
+```bash
+cd nuttx
+./tools/configure.sh myboard:nsh
+make -j$(nproc)
+```
+
+For a first bring-up, build with `CONFIG_DEBUG_FEATURES=y` and `CONFIG_DEBUG_INFO=y` so that early boot messages appear on the console.
+
+</Step>
+
+<Step title="Verify with ostest">
+
+Once you reach an NSH prompt, run the OS test suite to validate scheduler, memory, and IPC:
+
+```text
+nsh> ostest
+...
+ostest_main: Exiting with status 0
+```
+
+All subtests should pass before you declare the port functional.
+
+</Step>
+
+</Steps>
+
+## Arch-level vs board-level code
+
+<AccordionGroup>
+
+<Accordion title="What belongs in arch/<arch>/src/<chip>/">
+  Chip-level code handles peripheral IP blocks that are part of the SoC die: interrupt controller (NVIC/GIC), system timer, GPIO multiplexer, DMA controller, internal UART/SPI/I2C/USB peripherals. This code is shared across all boards using the same chip. Do not put board-specific pin assignments here.
+</Accordion>
+
+<Accordion title="What belongs in boards/<arch>/<chip>/<board>/src/">
+  Board-level code handles everything that depends on the PCB schematic: which GPIO pin drives an LED, which SPI bus the flash chip sits on, which UART is the console, whether an external oscillator is present. The board `src/` directory is linked into the build as `arch/<arch>/src/board/` at configure time.
+</Accordion>
+
+<Accordion title="include/ vs src/ in the board directory">
+  `include/` holds the public `board.h` header that other parts of the OS can include via `#include <arch/board/board.h>`. Only put macro definitions and inline functions there — no large data structures or function implementations. All implementation goes in `src/`.
+</Accordion>
+
+</AccordionGroup>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="STM32 platform" href="/platforms/stm32">
+    Existing STM32 chip layer you can build on top of.
+  </Card>
+  <Card title="i.MX RT platform" href="/platforms/imxrt">
+    NXP i.MX RT chip layer reference.
+  </Card>
+  <Card title="Write a device driver" href="/guides/device-drivers">
+    Add drivers in your board's src/ directory.
+  </Card>
+  <Card title="Driver framework reference" href="/reference/driver-framework">
+    Deep dive into the NuttX driver model.
+  </Card>
+</CardGroup>

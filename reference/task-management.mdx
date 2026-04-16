@@ -1,0 +1,252 @@
+---
+title: "Task management API"
+description: "Reference for NuttX task lifecycle functions: task_create, task_delete, task_restart, scheduling parameters, and related POSIX-compatible interfaces."
+---
+
+NuttX tasks are independent units of execution, each with their own stack, scheduling priority, and entry point. The task management API lets you create, delete, restart, and query tasks at runtime. Unlike pthreads, NuttX tasks are closer to UNIX processes: they do not share an address space with the caller in protected or kernel builds. All functions described here are declared in `include/sched.h` and `include/nuttx/sched.h`.
+
+<Note>
+In a `CONFIG_BUILD_KERNEL` build, `task_create()` is not available from user space. Use `posix_spawn()` or the `exec()` family instead.
+</Note>
+
+## Task lifecycle
+
+<AccordionGroup>
+  <Accordion title="task_create()">
+    Creates a new task and immediately makes it ready to run. The new task begins execution at `entry` with the argument vector `argv`.
+
+    ```c
+    int task_create(FAR const char *name, int priority, int stack_size,
+                    main_t entry, FAR char * const argv[]);
+    ```
+
+    <ParamField path="name" type="const char *" required>
+      Human-readable name for the task. Truncated to `CONFIG_TASK_NAME_SIZE` characters. Used in debug output and `ps`-style listings.
+    </ParamField>
+
+    <ParamField path="priority" type="int" required>
+      Scheduling priority. Valid range is `SCHED_PRIORITY_MIN` to `SCHED_PRIORITY_MAX`. Higher values run first under FIFO and round-robin policies.
+    </ParamField>
+
+    <ParamField path="stack_size" type="int" required>
+      Stack size in bytes. The kernel rounds this up to the hardware-required alignment. Use at least `CONFIG_PTHREAD_STACK_MIN`.
+    </ParamField>
+
+    <ParamField path="entry" type="main_t" required>
+      Entry point with signature `int entry(int argc, FAR char *argv[])`. The task exits when this function returns.
+    </ParamField>
+
+    <ParamField path="argv" type="FAR char * const []">
+      NULL-terminated array of argument strings passed to `entry` as `argv`. May be `NULL` if no arguments are needed.
+    </ParamField>
+
+    <ResponseField name="return" type="int">
+      On success, returns the positive non-zero PID of the new task. On failure, returns `ERROR` (`-1`) and sets `errno`. Returns `-ENOMEM` internally if memory cannot be allocated for the TCB or stack.
+    </ResponseField>
+
+    ```c
+    #include <sched.h>
+    #include <stdio.h>
+
+    static int my_task(int argc, FAR char *argv[])
+    {
+      printf("Task started, arg: %s\n", argc > 1 ? argv[1] : "(none)");
+      return 0;
+    }
+
+    void start_example(void)
+    {
+      FAR char * const args[] = { "my_task", "hello", NULL };
+      int pid = task_create("my_task", 100, 2048, my_task, args);
+      if (pid < 0)
+        {
+          fprintf(stderr, "task_create failed: %d\n", pid);
+        }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="task_delete()">
+    Terminates a task and releases its stack and TCB. If the target task has deferred cancellation enabled, deletion may be deferred to the next cancellation point.
+
+    ```c
+    int task_delete(pid_t pid);
+    ```
+
+    <ParamField path="pid" type="pid_t" required>
+      PID of the task to delete. A value of `0` targets the calling task, which redirects to `exit()`.
+    </ParamField>
+
+    <ResponseField name="return" type="int">
+      Returns `OK` (0) on success or a negated `errno` value on failure (e.g., `-ESRCH` if the PID is not found).
+    </ResponseField>
+
+    <Warning>
+      Deleting a task that holds a mutex or semaphore can cause priority inversion or deadlock. Ensure the target task has released all shared resources before calling `task_delete()`.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="task_restart()">
+    Terminates a task and immediately restarts it with the same PID, priority, entry point, stack size, and original arguments it had when first created.
+
+    ```c
+    int task_restart(pid_t pid);
+    ```
+
+    <ParamField path="pid" type="pid_t" required>
+      PID of the task to restart. Restarting the calling task (PID 0 or own PID) is not supported and returns an error.
+    </ParamField>
+
+    <ResponseField name="return" type="int">
+      Returns `OK` (0) on success or a negated `errno` on failure. Returns `-ENOSYS` if self-restart is attempted.
+    </ResponseField>
+
+    <Tip>
+      `task_restart()` is useful for watchdog-style recovery: a monitor task can restart a failed worker without changing its identity or priority.
+    </Tip>
+  </Accordion>
+</AccordionGroup>
+
+## Process identity
+
+```c
+#include <unistd.h>
+
+pid_t getpid(void);   /* Returns the PID of the calling task */
+```
+
+```c
+#include <stdlib.h>
+
+void exit(int status);   /* Terminates the calling task with the given exit code */
+```
+
+`getpid()` always succeeds. `exit()` does not return; it runs any registered `atexit()` handlers and then terminates the task.
+
+## Scheduling parameters
+
+These functions follow POSIX `sched_*` conventions. They are declared in `include/sched.h`.
+
+<AccordionGroup>
+  <Accordion title="sched_getparam() and sched_setparam()">
+    Read or write the scheduling parameters (priority) for a task identified by PID.
+
+    ```c
+    int sched_setparam(pid_t pid, FAR const struct sched_param *param);
+    int sched_getparam(pid_t pid, FAR struct sched_param *param);
+    ```
+
+    <ParamField path="pid" type="pid_t" required>
+      Target task PID. Use `0` to refer to the calling task.
+    </ParamField>
+
+    <ParamField path="param" type="struct sched_param *" required>
+      Pointer to a `sched_param` structure. The only meaningful field in NuttX is `sched_priority`.
+    </ParamField>
+
+    <ResponseField name="return" type="int">
+      Returns `OK` (0) on success, or `-1` with `errno` set on failure.
+    </ResponseField>
+
+    ```c
+    #include <sched.h>
+
+    void boost_priority(pid_t pid, int new_prio)
+    {
+      struct sched_param param;
+      param.sched_priority = new_prio;
+      if (sched_setparam(pid, &param) != OK)
+        {
+          perror("sched_setparam");
+        }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="sched_setscheduler() and sched_getscheduler()">
+    Set or query the scheduling policy for a task.
+
+    ```c
+    int sched_setscheduler(pid_t pid, int policy,
+                           FAR const struct sched_param *param);
+    int sched_getscheduler(pid_t pid);
+    ```
+
+    <ParamField path="pid" type="pid_t" required>
+      Target task PID. Use `0` for the calling task.
+    </ParamField>
+
+    <ParamField path="policy" type="int" required>
+      One of `SCHED_FIFO`, `SCHED_RR`, or `SCHED_SPORADIC`. `SCHED_OTHER` maps to `SCHED_FIFO` in NuttX.
+    </ParamField>
+
+    <ParamField path="param" type="const struct sched_param *" required>
+      Priority to apply along with the new policy.
+    </ParamField>
+
+    <ResponseField name="return" type="int">
+      `sched_setscheduler()` returns the previous policy on success or `-1` on failure. `sched_getscheduler()` returns the current policy or `-1` on failure.
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="sched_yield() and sched_lock()">
+    Cooperatively yield the CPU or prevent preemption.
+
+    ```c
+    int sched_yield(void);   /* Yield to next ready task at same or higher priority */
+    int sched_lock(void);    /* Disable preemption (non-nested) */
+    int sched_unlock(void);  /* Re-enable preemption */
+    int sched_lockcount(void); /* Return current preemption lock depth */
+    ```
+
+    <Warning>
+      `sched_lock()` is not recursive. A single `sched_unlock()` re-enables preemption regardless of how many times `sched_lock()` was called. Keep locked sections short to avoid starving other tasks.
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+## Task state enumeration
+
+The following enumeration from `include/nuttx/sched.h` describes all possible task states as stored in the TCB:
+
+```c
+enum tstate_e
+{
+  TSTATE_TASK_INVALID    = 0, /* TCB is uninitialized */
+  TSTATE_TASK_PENDING,        /* Pending preemption unlock */
+  TSTATE_TASK_READYTORUN,     /* Ready to run but not running */
+  TSTATE_TASK_RUNNING,        /* Currently running */
+  TSTATE_TASK_INACTIVE,       /* Initialized but not yet activated */
+  TSTATE_WAIT_SEM,            /* Blocked waiting for a semaphore */
+  TSTATE_WAIT_SIG,            /* Blocked waiting for a signal */
+  TSTATE_WAIT_MQNOTEMPTY,     /* Blocked waiting for a message queue */
+  TSTATE_WAIT_MQNOTFULL,      /* Blocked waiting for a message queue slot */
+};
+```
+
+## TCB flag values
+
+Key TCB flag bits defined in `include/nuttx/sched.h` that affect task behavior:
+
+| Flag | Value | Meaning |
+|------|-------|---------|
+| `TCB_FLAG_TTYPE_TASK` | `0 << 0` | Normal user task |
+| `TCB_FLAG_TTYPE_PTHREAD` | `1 << 0` | User pthread |
+| `TCB_FLAG_TTYPE_KERNEL` | `2 << 0` | Kernel thread |
+| `TCB_FLAG_NONCANCELABLE` | `1 << 2` | Cancellation disabled |
+| `TCB_FLAG_CANCEL_DEFERRED` | `1 << 3` | Deferred cancellation mode |
+| `TCB_FLAG_SCHED_FIFO` | `0 << 5` | FIFO scheduling policy |
+| `TCB_FLAG_SCHED_RR` | `1 << 5` | Round-robin scheduling policy |
+| `TCB_FLAG_SCHED_SPORADIC` | `2 << 5` | Sporadic scheduling policy |
+| `TCB_FLAG_CPU_LOCKED` | `1 << 8` | Task is locked to a specific CPU |
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="POSIX API reference" href="/reference/posix-api">
+    pthread_create and the full POSIX threading interface.
+  </Card>
+  <Card title="Scheduler component" href="/components/scheduler">
+    How the NuttX scheduler prioritizes and switches between tasks.
+  </Card>
+</CardGroup>

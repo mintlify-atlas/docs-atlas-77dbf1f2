@@ -1,0 +1,114 @@
+---
+title: "Supported hardware platforms"
+description: "NuttX supports ARM, ARM64, AVR, RISC-V, x86, x86_64, Xtensa, MIPS, and more MCU families through a layered board support package system."
+---
+
+NuttX is a portable real-time operating system that runs on a wide range of processor architectures and silicon families. The OS separates architecture-specific code, chip-specific drivers, and board-specific configuration into discrete layers, making it straightforward to add new hardware while reusing the bulk of the kernel and middleware unchanged.
+
+## Supported architectures
+
+The following architectures have support in the `arch/` directory of the NuttX source tree:
+
+| Architecture | Directory | Notes |
+|---|---|---|
+| ARM (Cortex-M/A/R) | `arch/arm/` | Most actively developed; widest board coverage |
+| ARM64 | `arch/arm64/` | Cortex-A series (64-bit) |
+| AVR | `arch/avr/` | 8-bit and 32-bit AVR |
+| CEVA | `arch/ceva/` | DSP/baseband processors |
+| HC | `arch/hc/` | Freescale HC series |
+| MIPS | `arch/mips/` | MIPS32 microcontrollers |
+| MiSOC | `arch/misoc/` | LiteX/MiSOC FPGA softcores |
+| OpenRISC (or1k) | `arch/or1k/` | OpenRISC 1000 |
+| Renesas | `arch/renesas/` | RX and H8 families |
+| RISC-V | `arch/risc-v/` | RV32 and RV64 |
+| Simulator | `arch/sim/` | Linux/macOS host simulator |
+| SPARC | `arch/sparc/` | SPARC V8 |
+| x86 | `arch/x86/` | 32-bit IA-32 |
+| x86\_64 | `arch/x86_64/` | 64-bit AMD64 |
+| Xtensa | `arch/xtensa/` | ESP32 and related |
+| Z16 | `arch/z16/` | Zilog Z16F |
+| Z80 | `arch/z80/` | Zilog Z80 / Z8 Encore |
+
+## How board support packages work
+
+NuttX organises hardware support into three layers:
+
+1. **Architecture layer** (`arch/<arch>/`) — CPU core, interrupt controller, memory map, and context switching. This code is entirely portable across all boards that share the same ISA.
+2. **Chip layer** (`arch/<arch>/src/<chip>/`) — Peripheral drivers (UART, SPI, I2C, DMA, …) tied to a specific silicon family such as `stm32f7` or `imxrt`.
+3. **Board layer** (`boards/<arch>/<chip>/<board>/`) — Pin muxing, clock tree setup, and board-specific initialisation for a specific piece of hardware.
+
+This separation means that adding a new board in the same chip family usually only requires writing the board layer and selecting Kconfig options — the chip-level peripheral drivers are already available.
+
+## Directory structure
+
+Every board follows the same layout under `boards/`:
+
+```
+boards/
+└── <arch>/
+    └── <chip>/
+        └── <board>/
+            ├── configs/
+            │   └── <config>/      # defconfig + Make.defs for one build target
+            │       ├── defconfig
+            │       └── Make.defs
+            ├── include/
+            │   └── board.h        # Clock frequencies, pin definitions
+            ├── Kconfig            # Board-level Kconfig symbols
+            ├── kernel/            # Kernel-mode entry (protected/kernel build)
+            ├── scripts/           # Linker scripts
+            └── src/               # Board initialisation, LED, buttons, etc.
+```
+
+The `configs/<config>/` subdirectory is the unit of configuration. Passing `<board>:<config>` to the `configure.sh` script (or `tools/configure.py`) selects that defconfig and builds the corresponding firmware image.
+
+```bash
+# Example: configure the STM32F4Discovery for the nsh target
+cd nuttx
+./tools/configure.sh stm32f4discovery:nsh
+make -j$(nproc)
+```
+
+## Boards by architecture
+
+The `boards/` tree mirrors the `arch/` tree. The ARM sub-tree alone covers more than 45 chip families:
+
+```
+boards/arm/
+├── imxrt/          kinetis/        kl/             lpc17xx_40xx/
+├── nrf52/          rp2040/         s32k1xx/        sam34/
+├── sama5/          samd5e5/        samv7/
+├── stm32/          stm32f7/        stm32h7/        stm32l4/
+├── stm32l5/        stm32u5/        tiva/           xmc4/
+└── … (45 total chip families under arm/)
+```
+
+Other architectures with board support include `boards/arm64/`, `boards/avr/`, `boards/risc-v/`, `boards/xtensa/`, `boards/x86_64/`, and more.
+
+## Platform pages
+
+<CardGroup cols={2}>
+  <Card title="STM32" href="/platforms/stm32" icon="microchip">
+    STM32F4, STM32F7, STM32H7, and STM32L4 board support packages and configuration examples.
+  </Card>
+  <Card title="i.MX RT" href="/platforms/imxrt" icon="microchip">
+    NXP i.MX RT1020 through RT1064 Cortex-M7 boards and EVK configurations.
+  </Card>
+  <Card title="Kinetis" href="/platforms/kinetis" icon="microchip">
+    NXP Kinetis K64/K66 Freedom boards and Teensy 3.x support.
+  </Card>
+  <Card title="Pixhawk" href="/platforms/pixhawk" icon="plane">
+    Pixhawk flight controller hardware running PX4 firmware on NuttX.
+  </Card>
+</CardGroup>
+
+## Related topics
+
+<CardGroup cols={2}>
+  <Card title="Porting guide" href="/guides/porting" icon="wrench">
+    Step-by-step instructions for porting NuttX to new hardware.
+  </Card>
+  <Card title="Device driver guide" href="/guides/device-drivers" icon="plug">
+    How to write and register character and block device drivers.
+  </Card>
+</CardGroup>

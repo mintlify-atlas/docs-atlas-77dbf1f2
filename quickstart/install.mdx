@@ -1,0 +1,218 @@
+---
+title: "Get started with PX4 NuttX"
+description: "Install build dependencies, set up a POSIX development environment, and clone the NuttX and apps repositories on Linux, macOS, or Windows."
+---
+
+Apache NuttX requires a POSIX development environment. Linux is the most straightforward host; macOS works natively; Windows users must choose a POSIX layer (WSL, Cygwin, or MSYS2) before proceeding. This guide walks through installing all required packages, the Kconfig frontend tools, a cross-compilation toolchain, and cloning the two repositories you need to start building.
+
+## Install system dependencies
+
+<Tabs>
+  <Tab title="Linux (Ubuntu/Debian)">
+    <Steps>
+      <Step title="Install build packages">
+        Run the following command to install all required system packages:
+
+        ```bash
+        sudo apt install \
+          bison flex gettext texinfo libncurses5-dev libncursesw5-dev \
+          gperf automake libtool pkg-config build-essential gperf genromfs \
+          libgmp-dev libmpc-dev libmpfr-dev libisl-dev binutils-dev libelf-dev \
+          libexpat-dev gcc-multilib g++-multilib picocom u-boot-tools util-linux
+        ```
+      </Step>
+      <Step title="Install the Kconfig frontend">
+        On Ubuntu 20.04 LTS and later, a precompiled package is available:
+
+        ```bash
+        sudo apt install kconfig-frontends
+        ```
+
+        On Ubuntu 18.04 and earlier, build it from the NuttX tools repository:
+
+        ```bash
+        git clone https://bitbucket.org/nuttx/tools.git
+        cd tools/kconfig-frontends
+        ./configure --enable-mconf --disable-nconf --disable-gconf --disable-qconf
+        make
+        sudo make install
+        ```
+      </Step>
+      <Step title="Install an ARM cross-compiler">
+        Install the ARM bare-metal toolchain:
+
+        ```bash
+        sudo apt install gcc-arm-none-eabi binutils-arm-none-eabi
+        ```
+
+        <Tip>
+          For the latest toolchain, download directly from arm.com and add the `bin/` directory to your `PATH`. The NuttX CI scripts at `tools/ci/cibuild.sh` contain hints for toolchains for all supported architectures.
+        </Tip>
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="macOS">
+    <Steps>
+      <Step title="Install Xcode command-line tools">
+        Xcode provides the native compiler and the rest of the host toolchain:
+
+        ```bash
+        xcode-select --install
+        ```
+      </Step>
+      <Step title="Install Homebrew packages">
+        The following packages are needed, particularly if you plan to build the simulator or work with U-Boot images:
+
+        ```bash
+        brew install x86_64-elf-gcc   # Used by the simulator build
+        brew install u-boot-tools     # Some platforms integrate with U-Boot
+        ```
+      </Step>
+      <Step title="Install the Kconfig frontend">
+        Build `kconfig-frontends` from source with the macOS patch:
+
+        ```bash
+        git clone https://bitbucket.org/nuttx/tools.git
+        cd tools/kconfig-frontends
+        patch < ../kconfig-macos.diff -p 1
+        ./configure --enable-mconf --disable-shared --enable-static \
+          --disable-gconf --disable-qconf --disable-nconf
+        make
+        sudo make install
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Windows (WSL)">
+    <Steps>
+      <Step title="Enable Windows Subsystem for Linux">
+        Open **Settings → Update & Security → For Developers** and enable **Developer mode**. Then open **Control Panel → Programs → Turn Windows features on or off** and enable **Windows Subsystem for Linux**. Restart when prompted.
+      </Step>
+      <Step title="Install Ubuntu from the Windows Store">
+        Search for `bash.exe` in the Start menu and press Enter to download Ubuntu from the Windows Store. Create a UNIX user account when prompted.
+
+        <Note>
+          Windows files are accessible from Ubuntu at `/mnt/c/`, `/mnt/d/`, etc. Ubuntu files are accessible from Windows at `%localappdata%\lxss\`.
+        </Note>
+      </Step>
+      <Step title="Install Linux packages inside WSL">
+        Follow the Linux (Ubuntu/Debian) tab instructions. WSL 2 behaves like native Ubuntu:
+
+        ```bash
+        sudo apt install \
+          bison flex gettext texinfo libncurses5-dev libncursesw5-dev \
+          gperf automake libtool pkg-config build-essential gperf genromfs \
+          libgmp-dev libmpc-dev libmpfr-dev libisl-dev binutils-dev libelf-dev \
+          libexpat-dev gcc-multilib g++-multilib picocom u-boot-tools util-linux
+        ```
+
+        <Warning>
+          USB device access (for flashing) from WSL requires additional configuration via USBIP and is non-trivial. Consider using WSL 2 with USBIP support or an external Linux machine for flashing.
+        </Warning>
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Windows (Cygwin)">
+    <Steps>
+      <Step title="Download and run the Cygwin installer">
+        Download `setup.exe` from [cygwin.com](https://www.cygwin.com/) and install to `C:\cygwin`. When selecting packages, add at minimum the following in addition to the defaults:
+
+        ```
+        make              bison             libmpc-devel
+        gcc-core          byacc             automake-1.15
+        gcc-g++           gperf             libncurses-devel
+        flex              gdb               libmpfr-devel
+        git               unzip             zlib-devel
+        ```
+
+        <Note>
+          Build performance under Cygwin is slower than Linux or WSL. If Windows Defender's real-time protection is active, temporarily disabling it during the build greatly improves speed.
+        </Note>
+      </Step>
+      <Step title="Disable Git line-ending conversion">
+        Before cloning any NuttX repository on Windows, prevent Git from converting line endings — some NuttX shell scripts will break otherwise:
+
+        ```bash
+        git config --global core.autocrlf false
+        ```
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Windows (MSYS2)">
+    <Steps>
+      <Step title="Download and install MSYS2">
+        Download the Windows installer from [msys2.org](https://www.msys2.org/) and run it.
+      </Step>
+      <Step title="Install required packages with pacman">
+        Open the MSYS2 shell and install the necessary tools:
+
+        ```bash
+        pacman -S git make gcc gdb
+        pacman -S bison curl gperf ncurses-devel automake-wrapper autoconf pkg-config
+        ```
+
+        For the simulator build, also install:
+
+        ```bash
+        pacman -S zlib-devel
+        ```
+      </Step>
+      <Step title="Handle paths with spaces">
+        MSYS2 cannot use directory names with spaces in PATH. If any tool path contains spaces (e.g., `C:\Program Files`), create Windows junctions from a `cmd.exe` window:
+
+        ```batch
+        cd c:\msys64
+        mklink /j programfiles "C:\Program Files"
+        mklink /j programfiles86 "C:\Program Files (x86)"
+        ```
+
+        The junctions then appear as `/programfiles` and `/programfiles86` inside MSYS2.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+## Avoid spaces in the build path
+
+The NuttX build system does not tolerate spaces in any directory name along the path to the source tree. If your home directory contains spaces (e.g., `/home/First Last`), create a separate workspace without spaces:
+
+```bash
+sudo mkdir /home/nuttx
+sudo chown $USER /home/nuttx
+```
+
+## Clone the repositories
+
+NuttX consists of two sibling repositories: the core OS (`nuttx`) and the applications package (`apps`). They must be placed side by side in the same parent directory.
+
+```bash
+mkdir nuttxspace
+cd nuttxspace
+git clone https://github.com/apache/incubator-nuttx.git nuttx
+git clone https://github.com/apache/incubator-nuttx-apps.git apps
+```
+
+The resulting layout must look like this:
+
+```
+nuttxspace/
+├── nuttx/      ← core OS
+└── apps/       ← applications (semi-optional but required for most builds)
+```
+
+<Note>
+  The `apps/` directory is described as "semi-optional" in the source: NuttX will fail to build without some `apps/` directory present. You may substitute your own custom application directory as long as it provides valid `Makefile` and `Kconfig` files.
+</Note>
+
+Alternatively, download a stable release archive from [nuttx.apache.org/download](https://nuttx.apache.org/download/) and unpack both tarballs into the same parent directory, renaming them to `nuttx/` and `apps/`.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Configure for your board" icon="sliders" href="/quickstart/configuring">
+    Use `tools/configure.sh` to select a board and configuration, then customise with `menuconfig`.
+  </Card>
+  <Card title="Build NuttX firmware" icon="hammer" href="/quickstart/building">
+    Run `make` to compile the firmware and learn about build targets and toolchain options.
+  </Card>
+</CardGroup>

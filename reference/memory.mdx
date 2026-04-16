@@ -1,0 +1,310 @@
+---
+title: "Memory management in NuttX"
+description: "Reference for NuttX heap allocators: malloc/free, kmm_malloc, kumm_malloc, granule allocator, memory build modes, and IRQ-safe allocation patterns."
+---
+
+NuttX provides a layered memory management system whose shape depends on the selected build mode. In a flat build there is a single heap; in protected and kernel builds there are separate kernel and user heaps. All heap operations use the same underlying allocator from `mm/mm_heap/`, but are exposed through different wrapper functions. The primary headers are `include/nuttx/mm/mm.h` for kernel-internal access and the standard `<stdlib.h>` for user-space `malloc`/`free`.
+
+## Build modes and heap topology
+
+```
+CONFIG_BUILD_FLAT     → single heap (g_mmheap), malloc/free operate on it
+CONFIG_BUILD_PROTECTED → kernel heap (g_kmmheap) + user heap (g_mmheap)
+CONFIG_BUILD_KERNEL   → kernel heap (g_kmmheap) + one user heap per task group
+```
+
+The comment block from `include/nuttx/mm/mm.h` captures this precisely:
+
+```c
+/* Flat Build: In the FLAT build (CONFIG_BUILD_FLAT=y), there is only a
+ * single heap accessed with the standard allocations (malloc/free).
+ *
+ * Protected build: In the protected build (CONFIG_BUILD_PROTECTED=y)
+ * there will be two allocators: one that allocates protected (kernel)
+ * memory and one that allocates unprotected (user) memory.
+ *
+ * Kernel Build: If the architecture has an MMU, then it may support the
+ * kernel build (CONFIG_BUILD_KERNEL=y). There is one kernel heap but
+ * multiple user heaps: one per task group.
+ */
+```
+
+<Note>
+The kernel heap (`g_kmmheap`) is never accessible from user code. Attempting to access kernel-heap symbols outside of `__KERNEL__` builds will result in a compilation error.
+</Note>
+
+## Standard allocator (user heap)
+
+The user-space interface is the familiar standard C API. In a flat build these map directly to `mm_malloc(g_mmheap, ...)`:
+
+```c
+#include <stdlib.h>
+
+void *malloc(size_t size);
+void  free(void *ptr);
+void *realloc(void *ptr, size_t size);
+void *calloc(size_t nmemb, size_t size);
+```
+
+These are always available regardless of build mode. In protected and kernel builds they allocate from the user heap for the current task group.
+
+## Kernel heap allocator (`kmm_*`)
+
+Kernel code uses the `kmm_*` wrappers when `CONFIG_MM_KERNEL_HEAP=y`. These functions are declared in `include/nuttx/mm/mm.h` and are only compiled in `__KERNEL__` context.
+
+<AccordionGroup>
+  <Accordion title="kmm_malloc() and kmm_free()">
+    ```c
+    /* From include/nuttx/mm/mm.h */
+
+    #ifdef CONFIG_MM_KERNEL_HEAP
+    FAR void *kmm_malloc(size_t size);
+    void      kmm_free(FAR void *mem);
+    FAR void *kmm_realloc(FAR void *oldmem, size_t newsize);
+    FAR void *kmm_calloc(size_t n, size_t elem_size);
+    FAR void *kmm_zalloc(size_t size);
+    FAR void *kmm_memalign(size_t alignment, size_t size);
+    #endif
+    ```
+
+    <ParamField path="size" type="size_t" required>
+      Number of bytes to allocate from the kernel heap.
+    </ParamField>
+
+    <ParamField path="mem" type="FAR void *" required>
+      Pointer previously returned by `kmm_malloc()` or a related function.
+    </ParamField>
+
+    <ResponseField name="return (kmm_malloc)" type="FAR void *">
+      Returns a pointer to allocated memory on success, or `NULL` on failure. Unlike user-space `malloc`, this does **not** set `errno`.
+    </ResponseField>
+
+    ```c
+    #include <nuttx/mm/mm.h>
+    #include <nuttx/kmalloc.h>
+
+    FAR struct my_dev_s *alloc_device(void)
+    {
+      FAR struct my_dev_s *dev = kmm_zalloc(sizeof(struct my_dev_s));
+      if (dev == NULL)
+        {
+          /* Allocation failed; handle error */
+          return NULL;
+        }
+      return dev;
+    }
+    ```
+
+    <Warning>
+      Never pass a pointer allocated by `kmm_malloc()` to `free()` or vice versa. Mixing heap pointers corrupts the allocator's internal linked list.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="kmm_zalloc() and kmm_memalign()">
+    `kmm_zalloc()` is equivalent to `kmm_calloc(1, size)` — it zero-initializes the allocated block, which is important for structures containing pointers or flags.
+
+    `kmm_memalign()` returns memory aligned to a power-of-two boundary, required for DMA buffers or hardware descriptor tables on some architectures.
+
+    ```c
+    FAR void *kmm_zalloc(size_t size);
+    FAR void *kmm_memalign(size_t alignment, size_t size);
+    ```
+
+    <ParamField path="alignment" type="size_t" required>
+      Required alignment in bytes. Must be a power of two.
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="User heap wrappers (umm_*)">
+    The symmetric `umm_*` wrappers operate on the user heap and are used by kernel code that needs to allocate into user space (e.g., when setting up a new task group).
+
+    ```c
+    void umm_initialize(FAR void *heap_start, size_t heap_size);
+    void umm_addregion(FAR void *heapstart, size_t heapsize);
+
+    FAR void *umm_brkaddr(int region);
+    void umm_extend(FAR void *mem, size_t size, int region);
+    bool umm_heapmember(FAR void *mem);
+    ```
+
+    These are available regardless of `CONFIG_MM_KERNEL_HEAP` because the user heap always exists.
+  </Accordion>
+</AccordionGroup>
+
+## Low-level heap API (`mm_*`)
+
+The `mm_*` functions operate on an explicit `struct mm_heap_s *` pointer and implement the actual allocator logic. The opaque type is defined in `include/nuttx/mm/mm.h`:
+
+```c
+struct mm_heap_s; /* Opaque; defined in mm/mm_heap/mm_heap.h */
+
+/* Initialization */
+FAR struct mm_heap_s *mm_initialize(FAR const char *name,
+                                    FAR void *heap_start, size_t heap_size);
+void mm_addregion(FAR struct mm_heap_s *heap, FAR void *heapstart,
+                  size_t heapsize);
+void mm_uninitialize(FAR struct mm_heap_s *heap);
+
+/* Allocation */
+FAR void *mm_malloc(FAR struct mm_heap_s *heap, size_t size);
+void      mm_free(FAR struct mm_heap_s *heap, FAR void *mem);
+FAR void *mm_realloc(FAR struct mm_heap_s *heap, FAR void *oldmem,
+                     size_t size);
+FAR void *mm_calloc(FAR struct mm_heap_s *heap, size_t n, size_t elem_size);
+FAR void *mm_zalloc(FAR struct mm_heap_s *heap, size_t size);
+FAR void *mm_memalign(FAR struct mm_heap_s *heap, size_t alignment,
+                      size_t size);
+
+/* Queries */
+bool   mm_heapmember(FAR struct mm_heap_s *heap, FAR void *mem);
+size_t mm_malloc_size(FAR void *mem);
+FAR void *mm_brkaddr(FAR struct mm_heap_s *heap, int region);
+
+/* Diagnostics */
+int mm_mallinfo(FAR struct mm_heap_s *heap, FAR struct mallinfo *info);
+void mm_memdump(FAR struct mm_heap_s *heap, pid_t pid);
+```
+
+<Tip>
+Use `mm_mallinfo()` during development to track peak usage and fragmentation. Pass `pid = -1` to `mm_memdump()` to dump all allocations regardless of owner.
+</Tip>
+
+## Granule allocator
+
+The granule allocator (`CONFIG_GRAN=y`) manages a fixed memory region in units of a configurable power-of-two granule size. It is designed for DMA-coherent regions and physical page pools where `malloc`-style variable-size allocation would be too costly.
+
+All types and prototypes are in `include/nuttx/mm/gran.h`.
+
+```c
+typedef FAR void *GRAN_HANDLE;
+
+struct graninfo_s
+{
+  uint8_t  log2gran;   /* Log2 of granule size in bytes */
+  uint16_t ngranules;  /* Total number of granules */
+  uint16_t nfree;      /* Free granules */
+  uint16_t mxfree;     /* Longest free run */
+};
+```
+
+<AccordionGroup>
+  <Accordion title="gran_initialize()">
+    ```c
+    GRAN_HANDLE gran_initialize(FAR void *heapstart, size_t heapsize,
+                                uint8_t log2gran, uint8_t log2align);
+    ```
+
+    <ParamField path="heapstart" type="FAR void *" required>
+      Start address of the memory region to manage. For DMA use, this is typically a linker-section address.
+    </ParamField>
+
+    <ParamField path="heapsize" type="size_t" required>
+      Total size in bytes of the region.
+    </ParamField>
+
+    <ParamField path="log2gran" type="uint8_t" required>
+      Log base-2 of the granule size. A value of `6` gives 64-byte granules; `12` gives 4 KiB granules (page size).
+    </ParamField>
+
+    <ParamField path="log2align" type="uint8_t" required>
+      Log base-2 of the required alignment. Set to `0` unless hardware imposes alignment constraints.
+    </ParamField>
+
+    <ResponseField name="return" type="GRAN_HANDLE">
+      An opaque handle used in subsequent `gran_alloc()` and `gran_free()` calls, or `NULL` on failure.
+    </ResponseField>
+  </Accordion>
+
+  <Accordion title="gran_alloc() and gran_free()">
+    ```c
+    FAR void *gran_alloc(GRAN_HANDLE handle, size_t size);
+    void      gran_free(GRAN_HANDLE handle, FAR void *memory, size_t size);
+    ```
+
+    <ParamField path="handle" type="GRAN_HANDLE" required>
+      Handle returned by `gran_initialize()`.
+    </ParamField>
+
+    <ParamField path="size" type="size_t" required>
+      Number of bytes to allocate (rounded up to the next whole granule). For `gran_free()`, this must match the size passed to `gran_alloc()`.
+    </ParamField>
+
+    ```c
+    #include <nuttx/mm/gran.h>
+
+    /* Position the DMA heap in a dedicated linker section */
+    FAR uint32_t g_dmaheap[DMAHEAP_SIZE] locate_data(.dmaheap);
+
+    static GRAN_HANDLE g_gran;
+
+    void init_dma_heap(void)
+    {
+      /* 64-byte granules (log2=6), 4-byte aligned (log2=2) */
+      g_gran = gran_initialize(g_dmaheap,
+                               sizeof(g_dmaheap),
+                               6, 2);
+    }
+
+    FAR uint8_t *alloc_dma_buffer(size_t nbytes)
+    {
+      return gran_alloc(g_gran, nbytes);
+    }
+
+    void free_dma_buffer(FAR uint8_t *buf, size_t nbytes)
+    {
+      gran_free(g_gran, buf, nbytes);
+    }
+    ```
+
+    <Warning>
+      The `size` argument to `gran_free()` is mandatory and must equal the size originally requested. The granule allocator does not store per-allocation metadata.
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+## IRQ-safe allocation
+
+Standard `malloc`/`kmm_malloc` use a semaphore for mutual exclusion and are **not** safe to call from interrupt context. When you need to allocate from an ISR, use one of the following patterns:
+
+1. **Pre-allocate from a fixed pool** using `mempool` (`mm/mempool/`) before entering interrupt context.
+2. **Use the granule allocator with `CONFIG_GRAN_INTR=y`**, which replaces the semaphore with an interrupt-disable critical section.
+3. **Allocate from a stack-local buffer** of known maximum size.
+
+```c
+/* CONFIG_GRAN_INTR=y makes gran_alloc() safe from ISR context */
+CONFIG_GRAN=y
+CONFIG_GRAN_INTR=y
+```
+
+<Warning>
+Calling `malloc()` or `kmm_malloc()` from an interrupt handler without `CONFIG_GRAN_INTR` will deadlock if the interrupted task holds the heap semaphore.
+</Warning>
+
+## Configuration options
+
+| Kconfig option | Effect |
+|----------------|--------|
+| `CONFIG_BUILD_FLAT` | Single shared heap; `malloc` and `kmm_malloc` are equivalent |
+| `CONFIG_BUILD_PROTECTED` | Separate kernel and user heaps using MPU regions |
+| `CONFIG_BUILD_KERNEL` | Kernel heap plus per-process user heaps via MMU |
+| `CONFIG_MM_KERNEL_HEAP` | Enables `g_kmmheap` and all `kmm_*` functions |
+| `CONFIG_MM_SMALL` | Uses 16-bit chunk headers; saves RAM on small MCUs |
+| `CONFIG_GRAN` | Enables the granule allocator |
+| `CONFIG_GRAN_INTR` | Makes granule allocator IRQ-safe (replaces semaphore with irq_save) |
+| `CONFIG_MM_BACKTRACE` | Records allocation call stacks for `mm_mallinfo_task()` |
+| `CONFIG_DEBUG_MM` | Enables `mm_checkcorruption()` and related diagnostics |
+
+## Shared memory
+
+When `CONFIG_MM_SHM=y`, NuttX provides POSIX shared memory (`shm_open`, `shm_unlink`, `mmap`, `munmap`) for inter-process communication in kernel builds. The shared memory region is backed by physical pages mapped into multiple task address spaces via the MMU. See `include/nuttx/mm/shm.h` for internal details.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="IPC: semaphores, queues, and signals" href="/reference/ipc">
+    Semaphore and message queue primitives that complement heap allocation.
+  </Card>
+  <Card title="Device driver framework" href="/reference/driver-framework">
+    How drivers allocate private device state from the kernel heap.
+  </Card>
+</CardGroup>

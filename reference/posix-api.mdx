@@ -1,0 +1,514 @@
+---
+title: "POSIX API reference"
+description: "Complete reference for NuttX POSIX interfaces: pthreads, mutexes, condition variables, signals, sigprocmask, and clock/timer functions."
+---
+
+NuttX provides a substantial subset of the POSIX.1-2017 interfaces, organized into threads, synchronization primitives, signals, and timers. The type definitions and function prototypes are drawn directly from `include/pthread.h`, `include/signal.h`, and `include/time.h`. Where NuttX departs from strict POSIX behavior, notes are included below.
+
+## POSIX threads
+
+<AccordionGroup>
+  <Accordion title="Thread creation and lifecycle">
+    Threads are created with `pthread_create()` and share the address space (and all file descriptors) of the creating task group.
+
+    ```c
+    /* From include/pthread.h */
+
+    typedef pid_t pthread_t;
+
+    struct pthread_attr_s
+    {
+      uint8_t priority;       /* Priority of the pthread */
+      uint8_t policy;         /* Scheduler policy */
+      uint8_t inheritsched;   /* Inherit parent priority/policy? */
+      uint8_t detachstate;    /* PTHREAD_CREATE_JOINABLE or PTHREAD_CREATE_DETACHED */
+      FAR void  *stackaddr;   /* Address of memory to be used as stack */
+      size_t stacksize;       /* Size of the stack allocated for the pthread */
+    };
+
+    typedef struct pthread_attr_s pthread_attr_t;
+    ```
+
+    ```c
+    int pthread_attr_init(FAR pthread_attr_t *attr);
+    int pthread_attr_destroy(FAR pthread_attr_t *attr);
+
+    int pthread_attr_setstacksize(FAR pthread_attr_t *attr, size_t stacksize);
+    int pthread_attr_getstacksize(FAR const pthread_attr_t *attr,
+                                  FAR size_t *stackaddr);
+
+    int pthread_attr_setdetachstate(FAR pthread_attr_t *attr, int detachstate);
+    int pthread_attr_getdetachstate(FAR const pthread_attr_t *attr,
+                                    FAR int *detachstate);
+
+    int pthread_create(FAR pthread_t *thread, FAR const pthread_attr_t *attr,
+                       pthread_startroutine_t startroutine, pthread_addr_t arg);
+
+    void pthread_exit(pthread_addr_t value);
+    int  pthread_cancel(pthread_t thread);
+    int  pthread_join(pthread_t thread, FAR pthread_addr_t *value);
+    int  pthread_detach(pthread_t thread);
+    void pthread_yield(void);
+    ```
+
+    <ParamField path="thread" type="pthread_t *" required>
+      Output parameter filled with the new thread's identifier (which is its PID in NuttX).
+    </ParamField>
+
+    <ParamField path="attr" type="const pthread_attr_t *">
+      Thread attributes. Pass `NULL` to use defaults: priority 100, `PTHREAD_STACK_DEFAULT` stack size, `PTHREAD_CREATE_JOINABLE`.
+    </ParamField>
+
+    <ParamField path="startroutine" type="pthread_startroutine_t" required>
+      Thread function with signature `FAR void *routine(FAR void *arg)`.
+    </ParamField>
+
+    <ParamField path="arg" type="pthread_addr_t">
+      Opaque argument passed to `startroutine`. May be `NULL`.
+    </ParamField>
+
+    <ResponseField name="return (pthread_create)" type="int">
+      Returns `0` on success or a positive `errno` value on failure (e.g., `EAGAIN`, `ENOMEM`).
+    </ResponseField>
+
+    <CodeGroup>
+    ```c producer-consumer example
+    #include <pthread.h>
+    #include <stdio.h>
+
+    static FAR void *worker(FAR void *arg)
+    {
+      int id = (int)(intptr_t)arg;
+      printf("Worker %d running\n", id);
+      return NULL;
+    }
+
+    void launch_threads(void)
+    {
+      pthread_t tid;
+      pthread_attr_t attr;
+
+      pthread_attr_init(&attr);
+      pthread_attr_setstacksize(&attr, 4096);
+
+      pthread_create(&tid, &attr, worker, (FAR void *)(intptr_t)1);
+      pthread_attr_destroy(&attr);
+
+      pthread_join(tid, NULL);
+    }
+    ```
+    ```c detached thread example
+    #include <pthread.h>
+
+    static FAR void *bg_task(FAR void *arg)
+    {
+      /* Runs until pthread_exit() or task termination */
+      return NULL;
+    }
+
+    void start_detached(void)
+    {
+      pthread_t tid;
+      pthread_attr_t attr;
+
+      pthread_attr_init(&attr);
+      pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+      pthread_create(&tid, &attr, bg_task, NULL);
+      pthread_attr_destroy(&attr);
+      /* No need to call pthread_join() */
+    }
+    ```
+    </CodeGroup>
+
+    <Note>
+      `pthread_t` is `pid_t` in NuttX. `pthread_self()` is therefore `((pthread_t)getpid())`. Two thread IDs compare equal with the macro `pthread_equal(t1, t2)`.
+    </Note>
+  </Accordion>
+
+  <Accordion title="Scheduling attributes for threads">
+    Thread scheduling policy and priority can be set before creation via attributes or changed at runtime.
+
+    ```c
+    int pthread_attr_setschedpolicy(FAR pthread_attr_t *attr, int policy);
+    int pthread_attr_getschedpolicy(FAR const pthread_attr_t *attr,
+                                    FAR int *policy);
+
+    int pthread_attr_setschedparam(FAR pthread_attr_t *attr,
+                                   FAR const struct sched_param *param);
+    int pthread_attr_getschedparam(FAR const pthread_attr_t *attr,
+                                   FAR struct sched_param *param);
+
+    int pthread_attr_setinheritsched(FAR pthread_attr_t *attr,
+                                     int inheritsched);
+
+    int pthread_setschedparam(pthread_t thread, int policy,
+                              FAR const struct sched_param *param);
+    int pthread_getschedparam(pthread_t thread, FAR int *policy,
+                              FAR struct sched_param *param);
+    int pthread_setschedprio(pthread_t thread, int prio);
+    ```
+
+    Valid values for `inheritsched`: `PTHREAD_INHERIT_SCHED` (default) or `PTHREAD_EXPLICIT_SCHED`.
+  </Accordion>
+
+  <Accordion title="Thread cancellation">
+    NuttX supports both deferred and asynchronous cancellation.
+
+    ```c
+    int pthread_setcancelstate(int state, FAR int *oldstate);
+    int pthread_setcanceltype(int type, FAR int *oldtype);
+    void pthread_testcancel(void);
+    ```
+
+    | Constant | Value | Meaning |
+    |----------|-------|---------|
+    | `PTHREAD_CANCEL_ENABLE` | 0 | Cancellation is enabled |
+    | `PTHREAD_CANCEL_DISABLE` | 1 | Cancellation is disabled |
+    | `PTHREAD_CANCEL_DEFERRED` | 0 | Cancel at next cancellation point |
+    | `PTHREAD_CANCEL_ASYNCHRONOUS` | 1 | Cancel immediately |
+
+    When a thread is canceled, its return value is `PTHREAD_CANCELED`.
+  </Accordion>
+</AccordionGroup>
+
+## Mutexes
+
+<AccordionGroup>
+  <Accordion title="Mutex types and initialization">
+    NuttX mutexes are backed by a semaphore (`sem_t`) plus a holder PID.
+
+    ```c
+    /* From include/pthread.h */
+
+    struct pthread_mutex_s
+    {
+      FAR struct pthread_mutex_s *flink; /* Linked list of mutexes held by a task */
+      sem_t   sem;   /* Semaphore underlying the mutex */
+      pid_t   pid;   /* ID of the holder of the mutex */
+      uint8_t flags; /* See _PTHREAD_MFLAGS_* */
+      uint8_t type;  /* PTHREAD_MUTEX_NORMAL, ERRORCHECK, or RECURSIVE */
+      int16_t nlocks; /* Number of recursive locks held */
+    };
+
+    typedef struct pthread_mutex_s pthread_mutex_t;
+    ```
+
+    ```c
+    int pthread_mutexattr_init(FAR pthread_mutexattr_t *attr);
+    int pthread_mutexattr_destroy(FAR pthread_mutexattr_t *attr);
+    int pthread_mutexattr_settype(FAR pthread_mutexattr_t *attr, int type);
+    int pthread_mutexattr_gettype(FAR const pthread_mutexattr_t *attr,
+                                  FAR int *type);
+    int pthread_mutexattr_setprotocol(FAR pthread_mutexattr_t *attr,
+                                      int protocol);
+
+    int pthread_mutex_init(FAR pthread_mutex_t *mutex,
+                           FAR const pthread_mutexattr_t *attr);
+    int pthread_mutex_destroy(FAR pthread_mutex_t *mutex);
+    int pthread_mutex_lock(FAR pthread_mutex_t *mutex);
+    int pthread_mutex_trylock(FAR pthread_mutex_t *mutex);
+    int pthread_mutex_timedlock(FAR pthread_mutex_t *mutex,
+                                FAR const struct timespec *abs_timeout);
+    int pthread_mutex_unlock(FAR pthread_mutex_t *mutex);
+    ```
+
+    | Mutex type | Constant | Behavior on re-lock |
+    |------------|----------|---------------------|
+    | Normal | `PTHREAD_MUTEX_NORMAL` (0) | Deadlocks |
+    | Error-check | `PTHREAD_MUTEX_ERRORCHECK` (1) | Returns `EDEADLK` |
+    | Recursive | `PTHREAD_MUTEX_RECURSIVE` (2) | Succeeds; counts locks |
+    | Default | `PTHREAD_MUTEX_DEFAULT` | Same as `PTHREAD_MUTEX_NORMAL` |
+
+    For priority inheritance, set the protocol attribute to `PTHREAD_PRIO_INHERIT` (`SEM_PRIO_INHERIT`).
+
+    ```c
+    /* Static initialization */
+    pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    ```
+  </Accordion>
+
+  <Accordion title="Condition variables">
+    Condition variables pair with a mutex to implement signaling between threads.
+
+    ```c
+    /* From include/pthread.h */
+
+    struct pthread_cond_s
+    {
+      sem_t     sem;
+      clockid_t clockid;  /* CLOCK_REALTIME or CLOCK_MONOTONIC */
+    };
+
+    typedef struct pthread_cond_s pthread_cond_t;
+    ```
+
+    ```c
+    int pthread_condattr_init(FAR pthread_condattr_t *attr);
+    int pthread_condattr_destroy(FAR pthread_condattr_t *attr);
+    int pthread_condattr_getclock(FAR const pthread_condattr_t *attr,
+                                  FAR clockid_t *clockid);
+    int pthread_condattr_setclock(FAR pthread_condattr_t *attr,
+                                  clockid_t clockid);
+
+    int pthread_cond_init(FAR pthread_cond_t *cond,
+                          FAR const pthread_condattr_t *attr);
+    int pthread_cond_destroy(FAR pthread_cond_t *cond);
+    int pthread_cond_wait(FAR pthread_cond_t *cond,
+                          FAR pthread_mutex_t *mutex);
+    int pthread_cond_timedwait(FAR pthread_cond_t *cond,
+                               FAR pthread_mutex_t *mutex,
+                               FAR const struct timespec *abstime);
+    int pthread_cond_signal(FAR pthread_cond_t *cond);
+    int pthread_cond_broadcast(FAR pthread_cond_t *cond);
+    ```
+
+    ```c
+    /* Static initialization */
+    pthread_cond_t cv = PTHREAD_COND_INITIALIZER; /* Uses CLOCK_REALTIME */
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Signals
+
+<AccordionGroup>
+  <Accordion title="Signal constants and types">
+    NuttX treats all signals as real-time signals. Signal numbers range from `MIN_SIGNO` (1) to `MAX_SIGNO` (31).
+
+    ```c
+    /* From include/signal.h */
+
+    typedef uint32_t sigset_t;   /* Bit set of 32 signals */
+    typedef volatile int sig_atomic_t;
+
+    struct siginfo
+    {
+      uint8_t      si_signo;   /* Signal number */
+      uint8_t      si_code;    /* Source: SI_USER, SI_QUEUE, SI_TIMER, etc. */
+      uint8_t      si_errno;   /* errno value associated with signal */
+      union sigval si_value;   /* Data passed with signal */
+      pid_t        si_pid;     /* Sending task ID (if CONFIG_SCHED_HAVE_PARENT) */
+      int          si_status;  /* Exit value or signal for SIGCHLD */
+    };
+
+    typedef struct siginfo siginfo_t;
+
+    struct sigaction
+    {
+      union
+      {
+        _sa_handler_t   _sa_handler;    /* Handler for non-SA_SIGINFO */
+        _sa_sigaction_t _sa_sigaction;  /* Handler for SA_SIGINFO */
+      } sa_u;
+      sigset_t sa_mask;   /* Signals blocked during handler */
+      int      sa_flags;  /* SA_SIGINFO, SA_RESTART, etc. */
+    };
+    ```
+
+    | Signal | Default number | Description |
+    |--------|---------------|-------------|
+    | `SIGUSR1` | 1 | User-defined signal 1 |
+    | `SIGUSR2` | 2 | User-defined signal 2 |
+    | `SIGALRM` | 3 | Alarm clock / POSIX timer default |
+    | `SIGCHLD` | 4 | Child task terminated |
+    | `SIGKILL` | 9 | Kill (configurable default action) |
+    | `SIGTERM` | 12 | Termination signal |
+
+    Signal numbers are configurable via `CONFIG_SIG_*` Kconfig options.
+  </Accordion>
+
+  <Accordion title="sigaction() and kill()">
+    ```c
+    int sigaction(int signo, FAR const struct sigaction *act,
+                  FAR struct sigaction *oact);
+
+    int kill(pid_t pid, int signo);
+    int raise(int signo);
+    int sigqueue(int pid, int signo, union sigval value);
+    ```
+
+    <ParamField path="signo" type="int" required>
+      Signal number. Must be in range `[MIN_SIGNO, MAX_SIGNO]`.
+    </ParamField>
+
+    <ParamField path="act" type="const struct sigaction *">
+      New action. Set `sa_handler` to `SIG_IGN` to ignore, `SIG_DFL` for the default action, or a function pointer for a custom handler. Set `SA_SIGINFO` in `sa_flags` to use the three-argument `sa_sigaction` form.
+    </ParamField>
+
+    <ParamField path="oact" type="struct sigaction *">
+      Previous action is stored here if non-NULL.
+    </ParamField>
+
+    ```c
+    #include <signal.h>
+    #include <stdio.h>
+
+    static void sig_handler(int signo, FAR siginfo_t *info,
+                            FAR void *context)
+    {
+      printf("Received signal %d from pid %d\n",
+             signo, info->si_pid);
+    }
+
+    void install_handler(void)
+    {
+      struct sigaction sa;
+      sa.sa_sigaction = sig_handler;
+      sa.sa_flags = SA_SIGINFO;
+      sigemptyset(&sa.sa_mask);
+      sigaction(SIGUSR1, &sa, NULL);
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="sigprocmask() and signal sets">
+    ```c
+    int sigprocmask(int how, FAR const sigset_t *set,
+                    FAR sigset_t *oset);
+
+    int sigemptyset(FAR sigset_t *set);
+    int sigfillset(FAR sigset_t *set);
+    int sigaddset(FAR sigset_t *set, int signo);
+    int sigdelset(FAR sigset_t *set, int signo);
+    int sigismember(FAR const sigset_t *set, int signo);
+
+    int sigpending(FAR sigset_t *set);
+    int sigwait(FAR const sigset_t *set, FAR int *sig);
+    int sigwaitinfo(FAR const sigset_t *set, FAR struct siginfo *value);
+    int sigtimedwait(FAR const sigset_t *set, FAR struct siginfo *value,
+                     FAR const struct timespec *timeout);
+    int sigsuspend(FAR const sigset_t *sigmask);
+    ```
+
+    Values for `how` in `sigprocmask()`:
+
+    | Constant | Value | Effect |
+    |----------|-------|--------|
+    | `SIG_BLOCK` | 1 | Add `set` to the current signal mask |
+    | `SIG_UNBLOCK` | 2 | Remove `set` from the current signal mask |
+    | `SIG_SETMASK` | 3 | Replace the signal mask with `set` |
+  </Accordion>
+</AccordionGroup>
+
+## Clocks and timers
+
+<AccordionGroup>
+  <Accordion title="Clock types and timespec">
+    ```c
+    /* From include/time.h */
+
+    typedef uint32_t  time_t;
+    typedef uint8_t   clockid_t;
+    typedef FAR void *timer_t;
+
+    struct timespec
+    {
+      time_t tv_sec;   /* Seconds */
+      long   tv_nsec;  /* Nanoseconds */
+    };
+
+    struct itimerspec
+    {
+      struct timespec it_interval; /* Repeat interval */
+      struct timespec it_value;    /* Initial expiry */
+    };
+    ```
+
+    | Clock ID | Value | Description |
+    |----------|-------|-------------|
+    | `CLOCK_REALTIME` | 0 | Wall-clock time; may jump on adjustment |
+    | `CLOCK_MONOTONIC` | 1 | Monotonic since unspecified epoch; never jumps |
+    | `CLOCK_BOOTTIME` | 2 | Monotonic including time in suspension |
+  </Accordion>
+
+  <Accordion title="clock_gettime() and clock_settime()">
+    ```c
+    int clock_settime(clockid_t clockid, FAR const struct timespec *tp);
+    int clock_gettime(clockid_t clockid, FAR struct timespec *tp);
+    int clock_getres(clockid_t clockid, FAR struct timespec *res);
+
+    int nanosleep(FAR const struct timespec *rqtp,
+                  FAR struct timespec *rmtp);
+    int clock_nanosleep(clockid_t clockid, int flags,
+                        FAR const struct timespec *rqtp,
+                        FAR struct timespec *rmtp);
+    ```
+
+    `clock_getres()` returns the resolution of the specified clock into `res`. The resolution is typically `1 / CLK_TCK` seconds (default: 10 ms when `CONFIG_USEC_PER_TICK` is 100,000).
+
+    ```c
+    #include <time.h>
+    #include <stdio.h>
+
+    void print_uptime(void)
+    {
+      struct timespec ts;
+      clock_gettime(CLOCK_MONOTONIC, &ts);
+      printf("Uptime: %lu.%09ld s\n",
+             (unsigned long)ts.tv_sec, ts.tv_nsec);
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="POSIX interval timers">
+    Interval timers deliver a signal or invoke a thread function on expiry.
+
+    ```c
+    int timer_create(clockid_t clockid, FAR struct sigevent *evp,
+                     FAR timer_t *timerid);
+    int timer_delete(timer_t timerid);
+    int timer_settime(timer_t timerid, int flags,
+                      FAR const struct itimerspec *value,
+                      FAR struct itimerspec *ovalue);
+    int timer_gettime(timer_t timerid, FAR struct itimerspec *value);
+    int timer_getoverrun(timer_t timerid);
+    ```
+
+    <ParamField path="clockid" type="clockid_t" required>
+      Base clock for the timer. Use `CLOCK_REALTIME` or `CLOCK_MONOTONIC`.
+    </ParamField>
+
+    <ParamField path="evp" type="struct sigevent *">
+      Specifies how to notify the caller when the timer fires. Set `sigev_notify` to `SIGEV_SIGNAL` and `sigev_signo` to the desired signal number. If `NULL`, `SIGALRM` is used.
+    </ParamField>
+
+    <ParamField path="flags" type="int">
+      Pass `TIMER_ABSTIME` (1) to interpret `it_value` as an absolute time; otherwise it is relative to the current time.
+    </ParamField>
+
+    ```c
+    #include <signal.h>
+    #include <time.h>
+
+    void arm_one_shot(int signo_on_fire)
+    {
+      timer_t tid;
+      struct sigevent evt;
+      struct itimerspec its;
+
+      evt.sigev_notify = SIGEV_SIGNAL;
+      evt.sigev_signo  = signo_on_fire;
+
+      timer_create(CLOCK_MONOTONIC, &evt, &tid);
+
+      its.it_value.tv_sec  = 1;
+      its.it_value.tv_nsec = 0;
+      its.it_interval.tv_sec  = 0; /* one-shot */
+      its.it_interval.tv_nsec = 0;
+
+      timer_settime(tid, 0, &its, NULL);
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Task management API" href="/reference/task-management">
+    task_create, task_delete, and scheduling parameter functions.
+  </Card>
+  <Card title="IPC: semaphores, queues, and signals" href="/reference/ipc">
+    sem_wait, mq_send, and other synchronization primitives.
+  </Card>
+</CardGroup>

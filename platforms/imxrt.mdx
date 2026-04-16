@@ -1,0 +1,142 @@
+---
+title: "i.MX RT support in NuttX"
+description: "NuttX supports NXP i.MX RT1020, RT1050, RT1060, and RT1064 Cortex-M7 crossover MCUs, with EVK boards and Teensy 4.x covered out of the box."
+---
+
+The NXP i.MX RT series are high-performance crossover MCUs that combine the speed of an applications processor (Cortex-M7 at 500–600 MHz) with the ease-of-use and real-time determinism expected from a microcontroller. NuttX supports the RT1020, RT1050, RT1060, and RT1064 variants. These chips are used in Pixhawk-series flight controllers (notably the Pixhawk 6C and 6X) as well as the popular Teensy 4.0 and 4.1 development boards.
+
+## Supported MCUs
+
+The following table lists i.MX RT MCUs and their support status in NuttX. Data is drawn from `Documentation/platforms/arm/imxrt/index.rst`.
+
+| MCU | NuttX support | Core | Frequency |
+|---|---|---|---|
+| RT500 | No | Cortex-M33 | 200 MHz |
+| RT600 | No | Cortex-M33 | 300 MHz |
+| RT1010 | No | Cortex-M7 | 500 MHz |
+| RT1015 | No | Cortex-M7 | 500 MHz |
+| **RT1020** | **Yes** | Cortex-M7 | 500 MHz |
+| RT1024 | No | Cortex-M7 | 500 MHz |
+| **RT1050** | **Yes** | Cortex-M7 | 600 MHz |
+| **RT1060** | **Yes** | Cortex-M7 | 600 MHz |
+| **RT1064** | **Yes** | Cortex-M7 | 600 MHz |
+| RT1170 | No | Cortex-M7 + M4 | 1 GHz + 400 MHz |
+
+## Peripheral support
+
+| Peripheral | Supported |
+|---|---|
+| ADC | Yes |
+| CAN (FlexCAN) | Yes |
+| eLCDIF | Yes |
+| ENC (quadrature encoder) | Yes |
+| ENET (Ethernet) | Yes |
+| GPIO | Yes |
+| I2C | Yes |
+| I2S | Yes |
+| PWM | Yes |
+| SPI | Yes |
+| UART | Yes |
+| USB (CDC-ACM device) | Yes |
+| FlexIO | No |
+| SAI | No |
+| SPDIF | No |
+
+<Note>
+USB Device (CDC-ACM) is supported; USB Host is not yet available for i.MX RT in NuttX. Write-back data cache is not compatible with Ethernet or USB serial; those subsystems require the default write-through data cache setting.
+</Note>
+
+## Boards
+
+The following boards are supported under `boards/arm/imxrt/`:
+
+### imxrt1020-evk
+
+NXP MIMXRT1020-EVK evaluation kit for the RT1020 (500 MHz, Cortex-M7). Provides Ethernet, USB, SDHC, and Arduino-compatible expansion headers.
+
+**Available configurations:** `netnsh`, `nsh`, `usdhc`
+
+### imxrt1050-evk
+
+NXP MIMXRT1050-EVK evaluation kit for the RT1050 (600 MHz, Cortex-M7). Includes on-board SDRAM and 64 MB HyperFlash.
+
+**Available configurations:** `knsh`, `libcxxtest`, `netnsh`, `nsh`
+
+### imxrt1060-evk
+
+NXP MIMXRT1060-EVK evaluation kit for the RT1060 (600 MHz, Cortex-M7). Adds CAN FD, parallel camera interface, and 256 KB on-chip SRAM.
+
+**Available configurations:** `can`, `canfd`, `knsh`, `libcxxtest`, `lvgl`, `netnsh`, `nsh`, `nshocram`
+
+### imxrt1064-evk
+
+NXP MIMXRT1064-EVK evaluation kit for the RT1064. Same as RT1060 with 4 MB of on-chip flash.
+
+### imxrt1170-evk
+
+NXP MIMXRT1170-EVK evaluation kit (directory present; NuttX RT1170 support is listed as not yet complete per the upstream documentation).
+
+### teensy-4.x
+
+PJRC Teensy 4.0 and Teensy 4.1 boards powered by the RT1060 or RT1062. Popular for hobbyist and educational use.
+
+**Available configurations:** `can-4.1`, `enc-4.1`, `lcd-4.1`, `lua-4.1`, `netnsh-4.1`, `nsh-4.0`, `nsh-4.1`, `pikron-bb`, `pwm-4.1`, `sd-4.1`
+
+## Configuring and building
+
+<Steps>
+  <Step title="Select a board and configuration">
+    ```bash
+    cd nuttx
+    ./tools/configure.sh imxrt1060-evk:nsh
+    ```
+  </Step>
+  <Step title="Optionally adjust Kconfig options">
+    ```bash
+    make menuconfig
+    ```
+
+    Key options for i.MX RT:
+
+    - `CONFIG_SCHED_TICKLESS` / `CONFIG_SCHED_TICKLESS_ALARM` — enable tickless scheduling using the GPT timer.
+    - `CONFIG_ARMV7M_DCACHE_WRITETHROUGH` — keep write-through data cache (required when using Ethernet or USB serial).
+    - `CONFIG_NETDEV_LATEINIT` — required when enabling both CAN and Ethernet simultaneously.
+  </Step>
+  <Step title="Build">
+    ```bash
+    make -j$(nproc)
+    ```
+  </Step>
+  <Step title="Flash via J-Link or CMSIS-DAP">
+    The EVK boards ship with an on-board OpenSDA / J-Link debug probe:
+
+    ```bash
+    # Using JLinkExe
+    JLinkExe -device MIMXRT1060XXX6A -if SWD -speed 4000 \
+      -CommandFile flash.jlink
+    ```
+
+    Or copy `nuttx.bin` to the mass-storage drive that appears when the board is connected via USB.
+  </Step>
+</Steps>
+
+## Tickless OS
+
+The i.MX RT port supports tickless scheduling through a GPT (General Purpose Timer) alarm. Enable it with `CONFIG_SCHED_TICKLESS_ALARM`. The clock source is 16.6 MHz divided by a prescaler of 1–4096; set `CONFIG_USEC_PER_TICK` to a value that matches the resulting timer frequency (10 or 100 µs are common choices).
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Platforms overview" href="/platforms/overview" icon="map">
+    Directory structure and architecture overview for all NuttX platforms.
+  </Card>
+  <Card title="Pixhawk flight controllers" href="/platforms/pixhawk" icon="plane">
+    Pixhawk 6C/6X use i.MX RT MCUs with NuttX as the RTOS.
+  </Card>
+  <Card title="Networking" href="/components/networking" icon="network">
+    NuttX TCP/IP stack and Ethernet driver integration.
+  </Card>
+  <Card title="Porting guide" href="/guides/porting" icon="wrench">
+    How to bring up NuttX on a new i.MX RT board.
+  </Card>
+</CardGroup>

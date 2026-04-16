@@ -1,0 +1,375 @@
+---
+title: "USB device and host in NuttX"
+description: "Configure and use the NuttX USB stack: CDC/ACM, mass storage, RNDIS, DFU on the device side; mass storage and HID on the host side; USB trace debugging."
+---
+
+NuttX includes a complete USB stack covering both device (peripheral) and host (controller) roles. The device framework lets your board enumerate as a CDC/ACM serial port, USB mass storage device, RNDIS network adapter, or DFU firmware-update target. The host framework lets NuttX drive USB peripherals — flash drives, HID keyboards and mice, and CDC serial adapters. Both sides share a common trace facility for debugging. This page covers enabling each side, the available class drivers, and how to use USB trace to diagnose problems.
+
+<Tabs>
+
+<Tab title="USB Device">
+
+## USB device framework
+
+The USB device stack sits in `drivers/usbdev/`. Available class drivers:
+
+| File | Class | Description |
+|---|---|---|
+| `cdcacm.c` | CDC/ACM | Virtual serial port (most common) |
+| `usbmsc.c` | Mass storage | Exposes a block device as a USB drive |
+| `rndis.c` | RNDIS | USB Ethernet (Windows-compatible) |
+| `cdcecm.c` | CDC/ECM | USB Ethernet (Linux/macOS) |
+| `dfu.c` | DFU | Firmware update over USB |
+| `pl2303.c` | PL2303 | Prolific serial emulation |
+| `composite.c` | Composite | Combine multiple classes in one device |
+
+### Enabling USB device in Kconfig
+
+At minimum you need `CONFIG_USBDEV` and a class driver:
+
+```kconfig
+# Core device-side stack
+CONFIG_USBDEV=y
+CONFIG_USBDEV_DUALSPEED=y     # Enable high-speed support if your chip supports it
+CONFIG_USBDEV_MAXPOWER=100    # Maximum bus current in mA
+
+# CDC/ACM virtual serial port
+CONFIG_CDCACM=y
+CONFIG_CDCACM_CONSOLE=y       # Route NSH console over USB
+CONFIG_CDCACM_BAUD=115200
+
+# USB mass storage
+# CONFIG_USBMSC=y
+
+# RNDIS network adapter
+# CONFIG_RNDIS=y
+
+# DFU firmware update
+# CONFIG_DFU=y
+```
+
+<Note>
+`CONFIG_USBDEV_DUALSPEED` enables USB 2.0 high-speed (480 Mbps). Only set it if your SoC's USB hardware supports high-speed operation — check your chip's reference manual.
+</Note>
+
+### CDC/ACM serial port
+
+CDC/ACM is the most common choice — it enumerates as a virtual COM port on Windows, Linux, and macOS without requiring vendor drivers.
+
+Register the CDC/ACM driver from your board initialization:
+
+```c
+#include <nuttx/usb/cdcacm.h>
+
+void board_late_initialize(void)
+{
+  int ret;
+
+  /* Register the CDC/ACM serial device at /dev/ttyACM0 */
+
+  ret = cdcacm_initialize(0, NULL);
+  if (ret < 0)
+    {
+      uerr("ERROR: cdcacm_initialize failed: %d\n", ret);
+    }
+}
+```
+
+The device path `/dev/ttyACM0` can then be used as a serial console or opened by applications for data transfer.
+
+### USB mass storage
+
+USB mass storage exposes a NuttX block device as a USB drive visible to the host PC.
+
+```c
+#include <nuttx/usb/usbmsc.h>
+
+void board_late_initialize(void)
+{
+  FAR void *handle;
+  int ret;
+
+  /* Initialize the USB mass storage device */
+
+  ret = usbmsc_configure(1, &handle);   /* 1 logical unit */
+  if (ret < 0)
+    {
+      return;
+    }
+
+  /* Bind a block device (e.g. SD card at /dev/mmcsd0) */
+
+  ret = usbmsc_bindlun(handle, "/dev/mmcsd0", 0, 0, 0, false);
+  if (ret < 0)
+    {
+      usbmsc_uninitialize(handle);
+      return;
+    }
+
+  usbmsc_exportluns(handle);
+}
+```
+
+### Composite device
+
+A composite device presents multiple interfaces in a single USB connection. For example, CDC/ACM plus mass storage:
+
+```kconfig
+CONFIG_COMPOSITE=y
+CONFIG_CDCACM=y
+CONFIG_USBMSC=y
+```
+
+```c
+#include <nuttx/usb/composite.h>
+
+void board_late_initialize(void)
+{
+  composite_initialize();
+}
+```
+
+The `composite.c` driver builds a combined descriptor from the registered class drivers.
+
+### DFU firmware update
+
+DFU lets a host PC flash new firmware over USB without a debug probe.
+
+```kconfig
+CONFIG_DFU=y
+CONFIG_DFU_MSFT_OS_DESCRIPTORS=y   # Automatic WinUSB driver on Windows
+```
+
+```c
+#include <nuttx/usb/dfu.h>
+
+void board_late_initialize(void)
+{
+  /* Register DFU; host will see the device as a DFU target */
+  dfu_initialize();
+}
+```
+
+Use `dfu-util` on the host to download firmware:
+
+```bash
+dfu-util -D nuttx.bin
+```
+
+</Tab>
+
+<Tab title="USB Host">
+
+## USB host framework
+
+The USB host stack sits in `drivers/usbhost/`. It lets NuttX act as the USB controller — the root hub drives downstream peripherals. Available host class drivers:
+
+| File | Class | Description |
+|---|---|---|
+| `usbhost_storage.c` | Mass storage | Mount USB flash drives |
+| `usbhost_hidkbd.c` | HID keyboard | Read keystrokes from USB keyboards |
+| `usbhost_hidmouse.c` | HID mouse | Read cursor events from USB mice |
+| `usbhost_cdcacm.c` | CDC/ACM | Communicate with USB serial adapters |
+| `usbhost_hub.c` | Hub | Multi-port USB hub support |
+| `usbhost_ft232r.c` | FTDI FT232R | FTDI USB-UART bridge |
+| `usbhost_xboxcontroller.c` | Xbox | Xbox controller input |
+
+### Enabling USB host in Kconfig
+
+```kconfig
+# Core host-side stack
+CONFIG_USBHOST=y
+CONFIG_USBHOST_HUBPORT=y       # Enable hub support
+CONFIG_USBHOST_ASYNCH=y        # Asynchronous transfers
+
+# USB host mass storage
+CONFIG_USBHOST_MSC=y
+
+# HID keyboard
+CONFIG_USBHOST_HIDKBD=y
+CONFIG_USBHOST_KBDBUFSIZE=64
+
+# HID mouse
+CONFIG_USBHOST_HIDMOUSE=y
+```
+
+### Registering host class drivers
+
+Before the host controller starts enumeration, you must register the class drivers you want to support. Call this from board initialization:
+
+```c
+#include <nuttx/usb/usbhost.h>
+
+void board_late_initialize(void)
+{
+  FAR struct usbhost_connection_s *conn;
+  int ret;
+
+  /* Register host class drivers */
+
+  ret = usbhost_msc_initialize();    /* Mass storage */
+  if (ret < 0)
+    {
+      uerr("ERROR: usbhost_msc_initialize failed: %d\n", ret);
+    }
+
+  ret = usbhost_kbdinit();           /* HID keyboard */
+  if (ret < 0)
+    {
+      uerr("ERROR: usbhost_kbdinit failed: %d\n", ret);
+    }
+
+  /* Initialize the host controller driver for your chip,
+   * e.g. STM32 OTG-HS */
+
+  conn = stm32_otghshost_initialize(0);
+  if (conn == NULL)
+    {
+      return;
+    }
+
+  /* Start the enumeration task */
+
+  ret = usbhost_connection_enumerate(conn);
+}
+```
+
+### Accessing a USB flash drive
+
+When a USB mass storage device is connected, `usbhost_storage.c` allocates a block device at `/dev/sda` (or `/dev/sdb`, etc.) and emits a log message. Mount it with:
+
+```text
+nsh> mount -t vfat /dev/sda /mnt/usb
+nsh> ls /mnt/usb
+nsh> umount /mnt/usb
+```
+
+Enable auto-mounting by starting a connection monitor task that calls `usbhost_connection_enumerate()` in a loop.
+
+### HID keyboard input
+
+The HID keyboard driver creates a character device at `/dev/kbda`. Read keyboard events by opening the device:
+
+```c
+#include <nuttx/input/kbd_codec.h>
+
+int fd = open("/dev/kbda", O_RDONLY);
+while (1)
+  {
+    uint8_t ch;
+    ssize_t n = read(fd, &ch, 1);
+    if (n == 1)
+      {
+        printf("key: 0x%02x\n", ch);
+      }
+  }
+close(fd);
+```
+
+</Tab>
+
+</Tabs>
+
+## USB trace debugging
+
+NuttX includes a detailed trace facility for diagnosing USB problems. It records events from both the device driver and the class driver in a compact in-memory log (from `Documentation/guides/usbtrace.rst`).
+
+### Enabling trace
+
+```kconfig
+CONFIG_USBDEV=y
+CONFIG_USBDEV_TRACE=y
+CONFIG_USBDEV_TRACE_NRECORDS=128    # Ring buffer size; increase if you lose events
+CONFIG_USBDEV_TRACE_STRINGS=y       # Decode trace IDs to human-readable names
+```
+
+To also send trace output to the serial console rather than the ring buffer, enable:
+
+```kconfig
+CONFIG_DEBUG_FEATURES=y
+CONFIG_DEBUG_USB=y
+CONFIG_DEBUG_INFO=y
+```
+
+### Trace event IDs
+
+Each logged event carries a 32-bit record: 8-bit event class, 8-bit event-specific data, and 16-bit context data. The event classes are defined in `include/nuttx/usb/usbdev_trace.h`:
+
+| ID | Meaning |
+|---|---|
+| `TRACE_INIT_ID` | Initialization events |
+| `TRACE_EP_ID` | Endpoint API calls |
+| `TRACE_DEV_ID` | USB device API calls |
+| `TRACE_CLASS_ID` | USB class driver API calls |
+| `TRACE_CLASSAPI_ID` | Other class driver system API calls |
+| `TRACE_CLASSSTATE_ID` | Class driver state changes |
+| `TRACE_INTENTRY_ID` | Interrupt handler entry |
+| `TRACE_INTDECODE_ID` | Decoded interrupt event |
+| `TRACE_INTEXIT_ID` | Interrupt handler exit |
+| `TRACE_READ_ID` | Read (OUT endpoint) action |
+| `TRACE_WRITE_ID` | Write (IN endpoint) action |
+| `TRACE_COMPLETE_ID` | Transfer completed |
+| `TRACE_DEVERROR_ID` | USB controller driver error |
+| `TRACE_CLSERROR_ID` | USB class driver error |
+
+### Using the USB monitor
+
+The USB monitor daemon (`apps/system/usbmonitor`) periodically drains the ring buffer and writes decoded output to the serial console. Enable it in Kconfig:
+
+```kconfig
+CONFIG_USBMONITOR=y
+CONFIG_USBMONITOR_STACKSIZE=2048
+CONFIG_USBMONITOR_PRIORITY=50
+CONFIG_USBMONITOR_INTERVAL=2         # Dump every 2 seconds
+CONFIG_USBMONITOR_TRACEINIT=y
+CONFIG_USBMONITOR_TRACECLASS=y
+CONFIG_USBMONITOR_TRACETRANSFERS=y
+CONFIG_USBMONITOR_TRACECONTROLLER=y
+CONFIG_USBMONITOR_TRACEINTERRUPTS=y
+```
+
+Start and stop the monitor from NSH:
+
+```text
+nsh> usbmon_start
+nsh> usbmon_stop
+```
+
+### Reading trace output
+
+Example trace output from a CDC/ACM connection on an LPC1768:
+
+```text
+1   Class API call 1: 0000       <- TRACE_CLASSAPI_ID: setup called
+2   Class error: 19:0000         <- TRACE_CLSERROR_ID: not connected yet
+3   Interrupt 1 entry: 0039      <- TRACE_INTENTRY_ID: USB IRQ fired
+4   Interrupt decode 7: 0019     <- TRACE_INTDECODE_ID: DEVSTAT
+5   Interrupt decode 32: 0019    <- TRACE_INTDECODE_ID: SUSPENDCHG
+6   Interrupt decode 6: 0019     <- TRACE_INTDECODE_ID: DEVRESET
+7   Class disconnect(): 0000     <- TRACE_CLASS_ID: class disconnected
+8   Device pullup(): 0001        <- TRACE_DEV_ID: D+ pull-up enabled
+9   Interrupt 1 exit: 0000       <- TRACE_INTEXIT_ID: IRQ done
+```
+
+See `drivers/usbdev/usbdev_trprintf.c` for the exact formatting logic.
+
+<Warning>
+Do not enable both `CONFIG_USBDEV_TRACE` (ring buffer) and `CONFIG_DEBUG_USB` (console output) at the same time. Both will produce output but the streams are asynchronous, making the interleaved log hard to read.
+</Warning>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="NuttX drivers overview" href="/components/drivers">
+    Overview of all driver subsystems including USB.
+  </Card>
+  <Card title="Networking" href="/components/networking">
+    RNDIS and CDC/ECM provide network connectivity over USB.
+  </Card>
+  <Card title="Write a device driver" href="/guides/device-drivers">
+    Background on how NuttX drivers are structured.
+  </Card>
+  <Card title="Port NuttX to a new board" href="/guides/porting">
+    Board-level USB initialization hooks.
+  </Card>
+</CardGroup>

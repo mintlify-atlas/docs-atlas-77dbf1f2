@@ -1,0 +1,247 @@
+---
+title: "Debug NuttX applications"
+description: "Debug NuttX with GDB over OpenOCD or J-Link, enable syslog levels and CONFIG_DEBUG options, trace USB events, and inspect running tasks."
+---
+
+Finding and fixing bugs is an essential part of embedded development. NuttX provides several complementary debugging approaches: a structured syslog system with configurable levels and subsystem granularity, GDB-based source-level debugging over OpenOCD or J-Link, NuttX-aware thread inspection, and a USB device trace facility. This page covers each approach based on the NuttX documentation and source.
+
+## Debug logging with syslog
+
+NuttX has a built-in syslog system with `error`, `warn`, and `info` levels, each individually selectable per subsystem. Debug options are configured through `menuconfig` under **Build Setup → Debug Options**.
+
+### Enable debug output
+
+<Steps>
+  <Step title="Open menuconfig">
+    ```bash
+    cd nuttx
+    make menuconfig
+    ```
+  </Step>
+  <Step title="Navigate to debug options">
+    Go to **Build Setup → Debug Options** and enable the following in order:
+
+    | Option | Config symbol | Effect |
+    |--------|--------------|--------|
+    | Enable Debug Features | `CONFIG_DEBUG_FEATURES` | Unlocks all per-subsystem debug options below |
+    | Enable Error Output | `CONFIG_DEBUG_ERROR` | Logs errors only |
+    | Enable Warnings Output | `CONFIG_DEBUG_WARN` | Logs warnings and errors |
+    | Enable Informational Debug Output | `CONFIG_DEBUG_INFO` | Logs info, warnings, and errors |
+  </Step>
+  <Step title="Select subsystems">
+    With `CONFIG_DEBUG_FEATURES` enabled, per-subsystem options become visible. Examples include:
+
+    | Subsystem | Config symbol | Log function |
+    |-----------|--------------|-------------|
+    | Network | `CONFIG_DEBUG_NET` | `netinfo()`, `neterr()` |
+    | Scheduler | `CONFIG_DEBUG_SCHED` | `sinfo()`, `serr()` |
+    | USB | `CONFIG_DEBUG_USB` | `uinfo()`, `uerr()` |
+    | File system | `CONFIG_DEBUG_FS` | `finfo()`, `ferr()` |
+
+    Highlight any subsystem entry and press `?` to see its `CONFIG_` symbol and dependencies.
+
+    <Warning>
+      Enabling all subsystems simultaneously produces an enormous volume of output and may significantly slow the system. Enable only the subsystems relevant to the problem you are investigating.
+    </Warning>
+  </Step>
+  <Step title="Enable timestamps (optional)">
+    To prepend a timestamp to every syslog message, enable:
+
+    **Device Drivers → System Logging → Prepend timestamp to syslog message** (`CONFIG_SYSLOG_TIMESTAMP`)
+  </Step>
+  <Step title="Rebuild">
+    ```bash
+    make
+    ```
+  </Step>
+</Steps>
+
+The full list of available debug logging functions is in `include/debug.h` in the NuttX source tree.
+
+### Quick changes with kconfig-tweak
+
+For scripted or frequent configuration changes, use `kconfig-tweak` to avoid the interactive menu:
+
+```bash
+kconfig-tweak --enable CONFIG_DEBUG_NET
+make olddefconfig   # reconcile dependencies after every tweak
+
+kconfig-tweak --disable CONFIG_DEBUG_NET
+make olddefconfig
+```
+
+## GDB debugging over OpenOCD
+
+### Start the OpenOCD GDB server
+
+For the Nucleo F103RB board (ST-Link v2 / STM32F1):
+
+```bash
+openocd -f interface/stlink-v2.cfg -f target/stm32f1x.cfg
+```
+
+OpenOCD will open a GDB server on port 3333 and a telnet interface on port 4444. Leave this terminal open.
+
+### Connect GDB to the target
+
+In a second terminal, launch `gdb-multiarch` with the NuttX ELF (which contains debug symbols):
+
+```bash
+cd nuttx/
+gdb-multiarch nuttx/nuttx
+```
+
+Inside the GDB session, connect to the OpenOCD GDB server:
+
+```
+(gdb) target extended-remote :3333
+```
+
+### Common GDB commands
+
+```
+(gdb) mon reset        # Reset the board
+(gdb) mon halt         # Halt execution
+(gdb) breakpoint nsh_main   # Set a breakpoint at nsh_main
+(gdb) continue         # Resume execution
+(gdb) info registers   # Print CPU registers
+(gdb) backtrace        # Print the call stack
+```
+
+<Tip>
+  GDB commands can be abbreviated: `c` for `continue`, `b` for `breakpoint`, `bt` for `backtrace`, `info b` for `info breakpoints`.
+</Tip>
+
+### Enable debug symbols
+
+For source-level debugging to work, the firmware must be compiled with debug symbols. Enable `CONFIG_DEBUG_SYMBOLS` in menuconfig:
+
+**Build Setup → Debug Options → Generate Debug Symbols** (`CONFIG_DEBUG_SYMBOLS`)
+
+Also consider enabling `CONFIG_DEBUG_NOOPT` to disable optimisations, which prevents the compiler from re-ordering or eliminating variables and makes stepping through code more predictable.
+
+## NuttX-aware task inspection
+
+Because NuttX is an RTOS, a running system has multiple tasks (threads) that GDB is not aware of by default. There are two approaches to expose them.
+
+### Via OpenOCD (hardware targets)
+
+OpenOCD has built-in NuttX RTOS awareness. It reads internal NuttX data structures to present each task as a GDB thread.
+
+<Steps>
+  <Step title="Start OpenOCD with NuttX RTOS support">
+    ```bash
+    openocd -f interface/stlink-v2.cfg -f target/stm32f1x.cfg \
+      -c '$_TARGETNAME configure -rtos nuttx'
+    ```
+  </Step>
+  <Step title="Pass memory layout offsets from GDB">
+    After loading the NuttX ELF in GDB, run these commands to tell OpenOCD where to find task control block fields:
+
+    ```
+    (gdb) eval "monitor nuttx.pid_offset %d", &((struct tcb_s *)(0))->pid
+    (gdb) eval "monitor nuttx.xcpreg_offset %d", &((struct tcb_s *)(0))->xcp.regs
+    (gdb) eval "monitor nuttx.state_offset %d", &((struct tcb_s *)(0))->task_state
+    (gdb) eval "monitor nuttx.name_offset %d", &((struct tcb_s *)(0))->name
+    (gdb) eval "monitor nuttx.name_size %d", sizeof(((struct tcb_s *)(0))->name)
+    ```
+
+    To run these automatically, define a GDB hook that fires whenever you load a file:
+
+    ```
+    define hookpost-file
+      eval "monitor nuttx.pid_offset %d", &((struct tcb_s *)(0))->pid
+      eval "monitor nuttx.xcpreg_offset %d", &((struct tcb_s *)(0))->xcp.regs
+      eval "monitor nuttx.state_offset %d", &((struct tcb_s *)(0))->task_state
+      eval "monitor nuttx.name_offset %d", &((struct tcb_s *)(0))->name
+      eval "monitor nuttx.name_size %d", sizeof(((struct tcb_s *)(0))->name)
+    end
+    ```
+  </Step>
+  <Step title="Inspect threads">
+    ```
+    (gdb) info threads
+      Id   Target Id         Frame
+    * 1    Remote target     nx_start_application () at init/nx_bringup.c:261
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  OpenOCD's NuttX RTOS support assumes `CONFIG_DISABLE_MQUEUE=y` and `CONFIG_PAGING=n` by default. If your build uses different settings, edit `./src/rtos/nuttx_header.h` in the OpenOCD source and rebuild.
+</Note>
+
+### Via the nuttx-gdbinit script (simulator and hardware)
+
+NuttX ships a GDB init script at `tools/nuttx-gdbinit` that works through the PROCFS interface and is compatible with both hardware targets and the simulator build. It requires `CONFIG_FS_PROCFS=y`.
+
+Create a symbolic link so GDB loads it automatically:
+
+```bash
+cd $HOME
+ln -s nuttx/tools/nuttx-gdbinit .gdbinit
+```
+
+Then inspect tasks with the custom command:
+
+```
+(gdb) info_nxthreads
+target examined
+_target_arch.name=armv7e-m
+$_target_has_fpu : 0
+$_target_has_smp : 0
+* 0 Thread 0x20000308  (Name: Idle Task, State: Running, Priority: 0) 0xdc in __start()
+  1 Thread 0x20001480  (Name: init, State: Waiting,Semaphore, Priority: 100) 0x7e08 in arm_switchcontext()
+```
+
+## USB device trace
+
+NuttX includes a USB device trace facility controlled by Kconfig options:
+
+| Config symbol | Description |
+|--------------|-------------|
+| `CONFIG_USBDEV_TRACE` | Enable USB tracing to an internal circular buffer |
+| `CONFIG_USBDEV_TRACE_NRECORDS` | Number of trace entries to retain in the buffer |
+| `CONFIG_DEBUG_FEATURES` + `CONFIG_DEBUG_USB` | Route USB trace output to the console instead of the buffer |
+
+When `CONFIG_USBDEV_TRACE` is set, events are logged to a circular buffer (size set by `CONFIG_USBDEV_TRACE_NRECORDS`). When only `CONFIG_DEBUG_USB` is set, events go directly to the console.
+
+### Trace event categories
+
+Each 32-bit trace record encodes:
+
+- **8 bits**: trace ID (event category)
+- **8 bits**: additional event-specific data
+- **16 bits**: context data
+
+| Trace ID | Event type |
+|----------|-----------|
+| `TRACE_INIT_ID` | Initialisation events |
+| `TRACE_EP_ID` | Endpoint API calls |
+| `TRACE_DEV_ID` | USB device API calls |
+| `TRACE_CLASS_ID` | USB class driver API calls |
+| `TRACE_CLASSAPI_ID` | Other class driver system API calls |
+| `TRACE_CLASSSTATE_ID` | Class driver state changes |
+| `TRACE_INTENTRY_ID` | Interrupt handler entry |
+| `TRACE_INTDECODE_ID` | Decoded interrupt event |
+| `TRACE_INTEXIT_ID` | Interrupt handler exit |
+| `TRACE_OUTREQQUEUED_ID` | Request queued for OUT endpoint |
+| `TRACE_INREQQUEUED_ID` | Request queued for IN endpoint |
+| `TRACE_READ_ID` | Read (OUT) action |
+| `TRACE_WRITE_ID` | Write (IN) action |
+| `TRACE_COMPLETE_ID` | Request completed |
+| `TRACE_DEVERROR_ID` | USB controller driver error |
+| `TRACE_CLSERROR_ID` | USB class driver error |
+
+Trace control interfaces are defined in `include/nuttx/usb/usbdev_trace.h`.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Configure NuttX for your board" icon="sliders" href="/quickstart/configuring">
+    Learn how to navigate menuconfig and enable CONFIG_DEBUG options for your build.
+  </Card>
+  <Card title="USB component reference" icon="usb" href="/guides/usb">
+    Full reference for USB device drivers, class drivers, and the trace subsystem.
+  </Card>
+</CardGroup>

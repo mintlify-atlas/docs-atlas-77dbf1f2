@@ -1,0 +1,138 @@
+---
+title: "Pixhawk flight controller support"
+description: "Pixhawk FMUv2 through FMUv6 flight controllers run PX4 firmware on NuttX, spanning STM32F4, STM32F7, STM32H7, and i.MX RT silicon families."
+---
+
+Pixhawk is a family of open-hardware flight management units (FMUs) designed for unmanned aerial and ground vehicles. All Pixhawk boards run the PX4 autopilot stack, which uses NuttX as its real-time operating system. NuttX provides Pixhawk with a POSIX-compatible API, a preemptive task scheduler, a virtual file system, and a hardware abstraction layer that allows PX4's application code to remain portable across very different silicon families — from the original STM32F4 through modern STM32H7 and NXP i.MX RT devices.
+
+## FMU version to MCU mapping
+
+Each generation of Pixhawk hardware is associated with a specific FMU revision that defines the connector standard, sensor suite, and MCU choice.
+
+| FMU version | Representative board(s) | MCU | Core / frequency |
+|---|---|---|---|
+| FMUv2 | Pixhawk 1 | STM32F427 | Cortex-M4F, 168 MHz |
+| FMUv3 | Pixhawk 2.1 (Cube Black) | STM32F427 | Cortex-M4F, 168 MHz |
+| FMUv4 | Pixracer | STM32F427 / STM32F469 | Cortex-M4F, 168 MHz |
+| FMUv4pro | Pixhawk 3 Pro | STM32F469 | Cortex-M4F, 180 MHz |
+| FMUv5 | Pixhawk 4 | STM32F765 | Cortex-M7, 216 MHz |
+| FMUv5X | Pixhawk 5X | STM32H753 | Cortex-M7, 480 MHz |
+| FMUv6C | Pixhawk 6C | STM32H743 | Cortex-M7, 480 MHz |
+| FMUv6X | Pixhawk 6X | STM32H753 | Cortex-M7, 480 MHz |
+
+<Note>
+The table above reflects the PX4 hardware definitions. The NuttX source tree in this repository does not include PX4-specific board configs directly; PX4 firmware builds add its own board layer on top of the NuttX kernel sources.
+</Note>
+
+## How PX4 uses NuttX
+
+PX4 firmware is layered on top of NuttX in the following way:
+
+1. **NuttX kernel** — scheduler, IPC primitives, memory management, interrupt handling. PX4 links against NuttX as a static library.
+2. **NuttX drivers** — UART, SPI, I2C, CAN, USB, SDMMC, and Ethernet peripherals are provided by the chip-level drivers in NuttX (`arch/arm/src/stm32f7/`, `arch/arm/src/stm32h7/`, `arch/arm/src/imxrt/`).
+3. **PX4 board layer** — pin muxing, clock configuration, and board-specific initialisation live in the PX4 firmware repository and are applied on top of the NuttX board support packages.
+4. **PX4 middleware** — the uORB message bus, the commander, estimators, and controllers all run as NuttX tasks scheduled by the RTOS.
+
+<Tip>
+Because NuttX exposes POSIX APIs (`pthread`, `open`, `read`, `write`, `ioctl`, …), most PX4 middleware code can also run on Linux hosts — which is how the PX4 software-in-the-loop (SITL) simulator works.
+</Tip>
+
+## Relevant NuttX board directories
+
+While dedicated PX4/Pixhawk board configs are maintained in the PX4 firmware repository, the upstream NuttX boards for the same MCU families serve as the reference starting point.
+
+### STM32F7 (`boards/arm/stm32f7/`)
+
+The FMUv5 Pixhawk 4 uses an STM32F7-series MCU. The NuttX reference boards for this family are:
+
+| Board | MCU | Notes |
+|---|---|---|
+| `nucleo-144` | STM32F722ZE, STM32F746ZG, STM32F767ZI | Nucleo-144 reference board covering multiple F7 variants |
+| `stm32f746g-disco` | STM32F746NG | Discovery board with 4.3" LCD |
+| `stm32f769i-disco` | STM32F769NI | Discovery board with dual display |
+| `stm32f746-ws` | STM32F746 | WebServer evaluation board |
+| `steval-eth001v1` | STM32F7 | Ethernet evaluation board |
+
+### STM32H7 (`boards/arm/stm32h7/`)
+
+The FMUv5X, FMUv6C, and FMUv6X Pixhawk boards use STM32H7 MCUs. The NuttX reference boards are:
+
+| Board | MCU | Notes |
+|---|---|---|
+| `nucleo-h743zi` | STM32H743ZI | NUCLEO-H743ZI: 400 MHz, 2 MB Flash, 1 MB SRAM |
+| `nucleo-h743zi2` | STM32H743ZI | Revised NUCLEO-H743ZI2 hardware |
+| `stm32h747i-disco` | STM32H747XI | Dual-core (Cortex-M7 + M4) discovery board |
+
+### i.MX RT (`boards/arm/imxrt/`)
+
+Newer Pixhawk 6C/6X variants use NXP i.MX RT MCUs. The NuttX reference EVK boards are:
+
+| Board | MCU | Core / frequency |
+|---|---|---|
+| `imxrt1020-evk` | MIMXRT1021 | Cortex-M7, 500 MHz |
+| `imxrt1050-evk` | MIMXRT1052 | Cortex-M7, 600 MHz |
+| `imxrt1060-evk` | MIMXRT1062 | Cortex-M7, 600 MHz |
+| `imxrt1064-evk` | MIMXRT1064 | Cortex-M7, 600 MHz, 4 MB on-chip Flash |
+
+## Building NuttX for a Pixhawk target
+
+PX4 firmware manages its own build system, but the underlying NuttX configuration follows the same pattern used for any other NuttX board.
+
+<Steps>
+  <Step title="Clone PX4 firmware (for Pixhawk-specific configs)">
+    ```bash
+    git clone https://github.com/PX4/PX4-Autopilot.git --recursive
+    cd PX4-Autopilot
+    ```
+  </Step>
+  <Step title="Build for a specific Pixhawk target">
+    PX4 uses CMake with a `VENDOR_MODEL_LABEL` pattern. For example:
+
+    ```bash
+    make px4_fmu-v6x_default
+    ```
+  </Step>
+  <Step title="Alternatively, configure NuttX directly for the reference EVK">
+    When developing low-level drivers on a reference board before porting to Pixhawk:
+
+    ```bash
+    cd nuttx
+    ./tools/configure.sh nucleo-h743zi:nsh
+    make -j$(nproc)
+    ```
+  </Step>
+</Steps>
+
+## NuttX components used by PX4
+
+<AccordionGroup>
+  <Accordion title="Scheduler">
+    PX4 tasks are created with `px4_task_spawn_cmd`, which wraps NuttX `task_create`. The priority-preemptive scheduler ensures hard real-time guarantees for the flight control loops. See [Scheduler](/components/scheduler) for details.
+  </Accordion>
+  <Accordion title="File system">
+    NuttX's pseudo file system (`/dev`, `/proc`) and FAT/littlefs on SD card are used for parameter storage, logging (ULog), and firmware updates. See [File system](/components/filesystem).
+  </Accordion>
+  <Accordion title="NSH (NuttShell)">
+    During development, NSH provides an interactive shell over UART or USB CDC-ACM. PX4 exposes its own MAVLink console, but NSH is available in debug builds. See [NSH](/components/nsh).
+  </Accordion>
+  <Accordion title="Networking">
+    Pixhawk boards with Ethernet (e.g., Pixhawk 6X) use the NuttX TCP/IP stack for MAVLink-over-UDP. See [Networking](/components/networking).
+  </Accordion>
+</AccordionGroup>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="STM32 board support" href="/platforms/stm32" icon="microchip">
+    STM32F4, F7, H7, and L4 NuttX board support packages covering the MCUs used in Pixhawk.
+  </Card>
+  <Card title="i.MX RT support" href="/platforms/imxrt" icon="microchip">
+    NXP i.MX RT Cortex-M7 support used in newer Pixhawk 6C/6X hardware.
+  </Card>
+  <Card title="Platforms overview" href="/platforms/overview" icon="map">
+    Full architecture and directory structure overview.
+  </Card>
+  <Card title="Porting guide" href="/guides/porting" icon="wrench">
+    How to bring NuttX up on new flight controller hardware.
+  </Card>
+</CardGroup>

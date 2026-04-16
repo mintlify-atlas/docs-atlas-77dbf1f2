@@ -1,0 +1,127 @@
+---
+title: "Licensing and compliance"
+description: "NuttX is Apache 2.0 licensed. This page covers the license terms, NOTICE file contents, third-party attributions, and how to contribute back."
+---
+
+Apache NuttX is distributed under the **Apache License, Version 2.0**. This is a permissive, non-copyleft open-source license that allows you to use, modify, and redistribute NuttX — including in proprietary commercial products — provided you meet the attribution requirements described below. PX4's fork of NuttX inherits this license.
+
+The full license text is in the `LICENSE` file at the root of the NuttX source tree. The `NOTICE` file records important additional information about patent risks and third-party restrictions that apply to specific optional features.
+
+## Apache License 2.0 summary
+
+The Apache 2.0 license grants you a perpetual, worldwide, royalty-free copyright and patent license to use, reproduce, prepare derivative works, publicly display, sublicense, and distribute the work. Key obligations when redistributing NuttX or a derivative:
+
+<Steps>
+  <Step title="Include the license">
+    Any distribution of the work or a derivative must include a copy of the Apache 2.0 license.
+  </Step>
+  <Step title="Mark modified files">
+    Modified files must carry a prominent notice stating that you changed them.
+  </Step>
+  <Step title="Retain attribution notices">
+    All copyright, patent, trademark, and attribution notices from the source form of the work must be retained in derivative works you distribute.
+  </Step>
+  <Step title="Reproduce the NOTICE file">
+    If the work includes a `NOTICE` text file (NuttX does), any derivative works you distribute must include a readable copy of the attribution notices from that `NOTICE` file. The contents of `NOTICE` are informational only and do not modify the license.
+  </Step>
+</Steps>
+
+You may add your own copyright statement to your modifications and may provide additional or different license terms for your modifications, provided your overall use and distribution otherwise complies with the Apache 2.0 conditions.
+
+## Patent grant
+
+The Apache 2.0 license includes an express patent grant. Each contributor grants you a royalty-free, irrevocable patent license for any patent claims the contributor holds that are necessarily infringed by their contribution. This grant terminates automatically if you initiate patent litigation against any entity for direct or contributory infringement of the work.
+
+## NOTICE file contents
+
+The `NOTICE` file at the root of the NuttX source tree reads:
+
+```
+Apache NuttX
+Copyright 2020 The Apache Software Foundation
+
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+```
+
+Beyond that standard ASF notice, the NOTICE file documents two additional items you should be aware of when building NuttX for a product:
+
+### FAT long filename patent risk
+
+Enabling `CONFIG_FAT_LFN` in your NuttX configuration activates FAT long filename support. The NOTICE file states:
+
+> If `CONFIG_FAT_LFN` is defined in your NuttX configuration file, then there may be some legal, patent issues.
+
+Microsoft holds several US patents covering FAT long filename implementations:
+
+| Patent | Subject |
+|---|---|
+| US 5,745,902 | Method and system for accessing a file using file names having different file name formats |
+| US 5,579,517 | Common name space for long and short filenames |
+| US 5,758,352 | Common name space for long and short filenames |
+| US 6,286,013 | Method and system for providing a common name space for long and short file names in an OS |
+
+<Warning>
+  The FAT long filename feature (`CONFIG_FAT_LFN`) may require a patent licence from Microsoft if used in a commercial product. Review the NOTICE file and consult legal counsel before enabling this feature. Short filename (8.3) FAT use is generally considered unaffected by these patents.
+</Warning>
+
+### NXP SPIFI restriction
+
+The NOTICE file also records a use restriction on SPIFI (Serial Peripheral Interface Flash Interface) code for the LPC43xx:
+
+> Code supporting SPIFI for the LCP43xx has restricted usage by NXP. Permission to use, copy, modify, and distribute this software and its documentation is hereby granted, under NXP Semiconductors' and its licensor's relevant copyrights in the software, without fee, **provided that it is used in conjunction with NXP Semiconductors microcontrollers**.
+
+The affected files are:
+- `arch/arm/src/lpc43xx/hardware/lpc43_spifi.h`
+- `arch/arm/src/lpc43xx/spifi/inc/spifilib_api.h`
+- `arch/arm/src/lpc43xx/spifi/inc/spifilib_dev.h`
+- `arch/arm/src/lpc43xx/spifi/inc/private/spifilib_chiphw.h`
+- `arch/arm/src/lpc43xx/spifi/src/spifilib_dev_common.c`
+- `arch/arm/src/lpc43xx/spifi/src/spifilib_fam_standard_cmd.c`
+
+## Third-party components
+
+The NuttX `LICENSE` file documents multiple third-party components included in the source tree, each with its own compatible open-source licence. Key components include:
+
+| Component | Licence | Location |
+|---|---|---|
+| uIP networking stack | BSD 3-Clause | `net/`, `include/nuttx/net/` |
+| Rhombus math library | MIT | `libs/libc/math` |
+| IGMP support | BSD-like | (Steve Reynolds / CITEL Technologies) |
+| HID parser (LUFA) | HPND-sell-variant | `drivers/usbhost` |
+| NFS client | BSD (UC Berkeley, U of Michigan) | `fs/nfs` |
+| SPIFFS | MIT | `fs/spiffs` |
+| LZF compression | BSD 2-Clause | `libs/libc/lzf` |
+| Various libc functions | BSD 2/3-Clause or public domain | `libs/libc/` |
+
+All of these licences are compatible with the Apache 2.0 licence. The BSD-licensed components derived from the University of California, Berkeley require the following attribution in documentation:
+
+> "This product includes software developed by the University of California, Berkeley and its contributors."
+
+## Contributing back
+
+PX4's NuttX fork follows the Apache NuttX contribution process for changes that are not PX4-specific. The `CONTRIBUTING.md` file in the repository root describes the requirements:
+
+- **Commit messages** must be descriptive. Use a `<keyword>: <message>` prefix to give context (e.g., `sched: fix compiler warning`). A body paragraph is encouraged for non-trivial changes.
+- **Pull request template** — fill in the `Summary`, `Impact`, and `Testing` sections of the PR template. Do not remove these sections.
+- **Coding standard** — all modified files must conform to the [NuttX C Coding Standard](https://nuttx.apache.org/docs/latest/contributing/coding_style.html). The `lint.yml` CI workflow automatically checks compliance using the `nxstyle` tool. You must fix style errors in files you modify even if you did not introduce them.
+- **CI** — all five CI workflows (build, check, lint, doc, docker) must pass before a PR can be merged.
+
+<Info>
+  Changes that improve NuttX for general embedded use cases — not specific to PX4 — should be submitted to the upstream Apache NuttX project at [github.com/apache/incubator-nuttx](https://github.com/apache/incubator-nuttx) rather than only to the PX4 fork.
+</Info>
+
+<CardGroup cols={2}>
+  <Card title="Overview" icon="book-open" href="/introduction/overview">
+    What is PX4 NuttX and how it relates to upstream Apache NuttX.
+  </Card>
+  <Card title="PX4 patches" icon="git-branch" href="/introduction/px4-patches">
+    Board support packages and CI workflows added by PX4.
+  </Card>
+  <Card title="POSIX API reference" icon="code" href="/reference/posix-api">
+    POSIX and ANSI APIs exposed by NuttX to application code.
+  </Card>
+  <Card title="Porting guide" icon="map" href="/guides/porting">
+    Adding a new board to NuttX, including licence considerations.
+  </Card>
+</CardGroup>

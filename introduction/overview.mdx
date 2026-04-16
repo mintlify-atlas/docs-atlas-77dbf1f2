@@ -1,0 +1,68 @@
+---
+title: "What is PX4 NuttX?"
+description: "NuttX is a POSIX-compliant RTOS for 8-to-64-bit MCUs. PX4 maintains a fork adding Pixhawk, STM32, i.MX RT, and Kinetis board support."
+---
+
+PX4 NuttX is PX4's maintained fork of Apache NuttX (Incubating), a real-time operating system designed for microcontroller environments ranging from tiny 8-bit devices up to 64-bit embedded processors. NuttX's defining characteristics are its emphasis on POSIX and ANSI standards compliance, its small memory footprint, and its fully pre-emptive scheduler — all of which make it well suited to the deterministic, safety-critical demands of flight control firmware. PX4 builds its autopilot stack directly on top of NuttX, relying on its task management primitives, virtual file system, device driver framework, and networking stack.
+
+## What is NuttX?
+
+NuttX is an RTOS whose goals, as stated in its own documentation, are:
+
+- **Small footprint** — usable in all but the tightest microcontroller environments, targeting tiny-to-small deeply embedded devices.
+- **Rich OS feature set** — POSIX/ANSI-like interfaces to support multi-threaded development on deeply embedded processors.
+- **Highly scalable** — fully scalable from 8-bit to 64-bit via many tiny source files, static library linking, and extensive Kconfig options.
+- **Standards compliance** — primary governing standards are POSIX and ANSI; additional APIs from Unix and other common RTOSes are adopted for functionality not covered by those standards.
+- **Real-time** — fully pre-emptible with fixed-priority, round-robin, and sporadic scheduling.
+- **Totally open** — distributed under the non-restrictive Apache 2.0 license.
+
+NuttX achieves its small footprint despite a large feature set through a deliberate build strategy: every feature is compiled into its own tiny source file and archived into a static library. The final link step extracts only the object files that are actually needed, so unused features add zero bytes to the binary. A comprehensive Kconfig system with hundreds of options lets you tune exactly which subsystems are compiled in.
+
+## Architecture overview
+
+NuttX supports three memory configurations:
+
+| Configuration | Description |
+|---|---|
+| Flat embedded build | All code runs in a single flat address space. Lowest overhead, suitable for the smallest MCUs. |
+| Protected build (MPU) | Kernel and user code are separated using an MPU. Provides memory protection without an MMU. |
+| Kernel build (MMU) | Full kernel/user separation with virtual memory. Requires an MMU-capable processor. |
+
+The kernel itself provides task management, inter-process communication (message queues, semaphores, signals, mutexes), a virtual file system (VFS), a network stack, and a rich driver framework. Applications access these services through a POSIX-compatible API, which means software written for Linux can often be ported to NuttX with minimal changes.
+
+## Relationship between Apache NuttX and PX4's fork
+
+The upstream project is **Apache NuttX (Incubating)**, hosted at the Apache Software Foundation. PX4 maintains its own fork at [github.com/PX4/NuttX](https://github.com/PX4/NuttX), which tracks the upstream closely but adds:
+
+- Board support packages for Pixhawk-family flight controllers and the STM32F4/F7/H7, i.MX RT, and Kinetis MCU families used in them.
+- PX4-specific Kconfig defaults and configuration fragments tuned for autopilot workloads.
+- CI workflows (GitHub Actions) for build verification, linting, and documentation generation.
+
+Changes that are not PX4-specific are submitted back to the upstream Apache NuttX project.
+
+<Note>
+  Apache NuttX is undergoing incubation at The Apache Software Foundation. As stated in the project's `DISCLAIMER-WIP` file, "incubation is required of all newly accepted projects until a further review indicates that the infrastructure, communications, and decision making process have stabilized in a manner consistent with other successful ASF projects."
+</Note>
+
+## Explore key areas
+
+<CardGroup cols={2}>
+  <Card title="Feature set" icon="list" href="/introduction/features">
+    A detailed breakdown of NuttX subsystems: task management, filesystems, drivers, networking, USB, and graphics.
+  </Card>
+  <Card title="PX4 patches" icon="git-branch" href="/introduction/px4-patches">
+    What PX4 adds to upstream NuttX — board support packages, CI workflows, and Kconfig customisations.
+  </Card>
+  <Card title="Licensing" icon="scale" href="/introduction/licensing">
+    Apache 2.0 license details, NOTICE file contents, and third-party attribution requirements.
+  </Card>
+  <Card title="Quick start" icon="rocket" href="/quickstart/install">
+    Install the toolchain, configure a board, build, and run NuttX firmware.
+  </Card>
+  <Card title="Scheduler" icon="cpu" href="/components/scheduler">
+    How the NuttX pre-emptive, priority-based scheduler works.
+  </Card>
+  <Card title="Platform support" icon="microchip" href="/platforms/overview">
+    Overview of supported MCU families and Pixhawk hardware targets.
+  </Card>
+</CardGroup>

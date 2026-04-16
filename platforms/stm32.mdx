@@ -1,0 +1,191 @@
+---
+title: "STM32 board support in NuttX"
+description: "NuttX supports STMicroelectronics STM32F4, STM32F7, STM32H7, and STM32L4 MCU families with boards ranging from Discovery kits to Nucleo-144 targets."
+---
+
+STMicroelectronics STM32 microcontrollers are among the most widely supported silicon families in NuttX. The Cortex-M4/M7 cores, rich peripheral sets, and low-cost development boards have made STM32 the default choice for many NuttX developers. Support spans four major sub-families: the STM32F4 (Cortex-M4, up to 180 MHz), the STM32F7 (Cortex-M7, up to 216 MHz), the STM32H7 (Cortex-M7, up to 480 MHz), and the STM32L4 (Cortex-M4 ultra-low-power).
+
+<Note>
+All STM32 chip-level drivers live under `arch/arm/src/stm32/`, `arch/arm/src/stm32f7/`, `arch/arm/src/stm32h7/`, and `arch/arm/src/stm32l4/`. Board-specific code lives under `boards/arm/stm32*/`.
+</Note>
+
+## Sub-family overview
+
+<Tabs>
+  <Tab title="STM32F4">
+    The STM32F4 sub-family is based on the ARM Cortex-M4F core and runs at up to 180 MHz. It is the most mature and most board-rich STM32 family in NuttX.
+
+    **Boards in `boards/arm/stm32/`:**
+
+    | Board directory | Description |
+    |---|---|
+    | `stm32f4discovery` | STM32F407VGT6 Discovery board, 168 MHz Cortex-M4, 1 MB Flash, 128 KB SRAM |
+    | `stm32f429i-disco` | STM32F429ZIT6 Discovery with integrated 2.4" LCD |
+    | `stm32f411e-disco` | STM32F411VET6 Discovery board |
+    | `stm32f411-minimum` | Minimal STM32F411 "black pill" board |
+    | `stm32f103-minimum` | STM32F103 "blue pill" minimum board |
+    | `nucleo-f429zi` | NUCLEO-F429ZI Nucleo-144 board |
+    | `nucleo-f446re` | NUCLEO-F446RE Nucleo-64 board |
+    | `nucleo-f412zg` | NUCLEO-F412ZG Nucleo-144 board |
+    | `nucleo-f410rb` | NUCLEO-F410RB Nucleo-64 board |
+    | `nucleo-f303re` | NUCLEO-F303RE Nucleo-64 board (STM32F303) |
+    | `nucleo-f303ze` | NUCLEO-F303ZE Nucleo-144 board |
+    | `nucleo-f334r8` | NUCLEO-F334R8 Nucleo-64 board |
+    | `nucleo-f4x1re` | NUCLEO-F401RE / NUCLEO-F411RE shared config |
+    | `olimex-stm32-e407` | Olimex STM32-E407 with STM32F407ZGT6 |
+    | `olimex-stm32-h405` | Olimex STM32-H405 with STM32F405RGT6 |
+    | `olimex-stm32-h407` | Olimex STM32-H407 with STM32F407ZGT6 |
+    | `omnibusf4` | OmnibusF4 flight controller |
+    | `stm3240g-eval` | ST STM3240G-EVAL evaluation board |
+    | `stm3220g-eval` | ST STM3220G-EVAL evaluation board |
+    | `stm3210e-eval` | ST STM3210E-EVAL evaluation board |
+    | `axoloti` | Axoloti audio board with STM32F427 |
+    | `maple` | Maple / Maple Mini boards |
+    | `photon` | Particle Photon (STM32F205) |
+    | `cloudctrl` | CloudController board |
+    | `mikroe-stm32f4` | MikroElektronika STM32F4 board |
+    | `fire-stm32v2` | WaveShare STM32 fire board v2 |
+    | `shenzhou` | Shenzhou development board |
+    | `stm32_tiny` | STM32 Tiny board |
+    | `stm32butterfly2` | STM32 Butterfly2 board |
+    | `viewtool-stm32f107` | ViewTool STM32F107 board |
+    | `clicker2-stm32` | MikroElektronika Clicker 2 |
+    | `b-g431b-esc1` | B-G431B-ESC1 electronic speed controller |
+    | `b-g474e-dpow1` | B-G474E-DPOW1 digital power board |
+    | `nucleo-g431kb` | NUCLEO-G431KB Nucleo-32 board |
+    | `nucleo-g431rb` | NUCLEO-G431RB Nucleo-64 board |
+    | `nucleo-g474re` | NUCLEO-G474RE Nucleo-64 board |
+    | `nucleo-l152re` | NUCLEO-L152RE Nucleo-64 board (STM32L152) |
+    | `et-stm32-stamp` | ET-STM32 Stamp board |
+    | `emw3162` | EMW3162 WiFi module |
+    | `hymini-stm32v` | HY-mini STM32v board |
+    | `stm32f334-disco` | STM32F334-DISCOVERY board |
+    | `stm32f3discovery` | STM32F3DISCOVERY board |
+    | `stm32ldiscovery` | STM32LDISCOVERY board |
+    | `stm32vldiscovery` | STM32VLDISCOVERY board |
+    | `nucleo-f103rb` | NUCLEO-F103RB Nucleo-64 board |
+    | `nucleo-f207zg` | NUCLEO-F207ZG Nucleo-144 board |
+    | `nucleo-f302r8` | NUCLEO-F302R8 Nucleo-64 board |
+    | `olimex-stm32-p107` | Olimex STM32-P107 board |
+    | `olimex-stm32-p207` | Olimex STM32-P207 board |
+    | `olimex-stm32-p407` | Olimex STM32-P407 board |
+    | `olimexino-stm32` | Olimexino-STM32 (Arduino-like) |
+
+    **Available configurations on `stm32f4discovery`:**
+
+    `adb`, `audio`, `canard`, `cxxtest`, `elf`, `ipv6`, `kostest`, `lcd1602`, `lwl`, `max31855`, `max7219`, `mmcsdspi`, `modbus_slave`, `module`, `netnsh`, `nsh`, `nxlines`, `pm`, `posix_spawn`, `pseudoterm`, `rgbled`, `rndis`, `sporadic`, `st7789`, `testlibcxx`, `usbmsc`, `usbnsh`, `wifi`, `xen1210`
+  </Tab>
+
+  <Tab title="STM32F7">
+    The STM32F7 sub-family uses the ARM Cortex-M7F core with double-precision FPU and runs at up to 216 MHz.
+
+    **Boards in `boards/arm/stm32f7/`:**
+
+    | Board directory | Description |
+    |---|---|
+    | `nucleo-144` | Nucleo-144 form-factor board; supports STM32F722ZE, STM32F746ZG, and STM32F767ZI variants |
+    | `stm32f746g-disco` | STM32F746G-DISCOVERY with 4.3" capacitive touch LCD |
+    | `stm32f769i-disco` | STM32F769I-DISCOVERY with dual display |
+    | `stm32f746-ws` | STM32F746 WebServer board |
+    | `steval-eth001v1` | STEVAL-ETH001V1 Ethernet evaluation board |
+
+    **Available configurations on `nucleo-144`:**
+
+    | Config | MCU |
+    |---|---|
+    | `f722-nsh` | STM32F722ZE — NSH shell |
+    | `f746-nsh` | STM32F746ZG — NSH shell |
+    | `f746-evalos` | STM32F746ZG — evaluation OS demo |
+    | `f746-pysim` | STM32F746ZG — Python simulator integration |
+    | `f767-nsh` | STM32F767ZI — NSH shell |
+    | `f767-netnsh` | STM32F767ZI — NSH with networking |
+    | `f767-evalos` | STM32F767ZI — evaluation OS demo |
+  </Tab>
+
+  <Tab title="STM32H7">
+    The STM32H7 sub-family uses the ARM Cortex-M7 at up to 480 MHz and includes 2 MB of Flash, 1 MB of SRAM, and a hardware JPEG codec.
+
+    **Boards in `boards/arm/stm32h7/`:**
+
+    | Board directory | Description |
+    |---|---|
+    | `nucleo-h743zi` | NUCLEO-H743ZI with STM32H743ZI, 400 MHz, 2 MB Flash, 1 MB SRAM |
+    | `nucleo-h743zi2` | NUCLEO-H743ZI2 (revised hardware) |
+    | `stm32h747i-disco` | STM32H747I-DISCOVERY dual-core (Cortex-M7 + M4) |
+
+    **Available configurations on `nucleo-h743zi`:**
+
+    `elf`, `netnsh`, `nsh`, `nxlines_oled`, `otg_fs_host`, `pwm`
+
+    <Note>
+    The STM32H7 port took longer to mature than STM32F4/F7 due to significant RCC changes between families. All listed boards are functional as of recent NuttX releases.
+    </Note>
+  </Tab>
+
+  <Tab title="STM32L4">
+    The STM32L4 sub-family targets ultra-low-power applications. The Cortex-M4F core runs at up to 80 MHz and the device includes extensive sleep and stop modes.
+
+    **Boards in `boards/arm/stm32l4/`:**
+
+    | Board directory | Description |
+    |---|---|
+    | `nucleo-l432kc` | NUCLEO-L432KC Nucleo-32 (STM32L432KC) |
+    | `nucleo-l452re` | NUCLEO-L452RE Nucleo-64 (STM32L452RE) |
+    | `nucleo-l476rg` | NUCLEO-L476RG Nucleo-64 (STM32L476RG) |
+    | `nucleo-l496zg` | NUCLEO-L496ZG Nucleo-144 (STM32L496ZG) |
+    | `stm32l476vg-disco` | STM32L476G-DISCOVERY with audio and LCD |
+    | `stm32l476-mdk` | STM32L476 MDK target |
+    | `stm32l4r9ai-disco` | STM32L4R9I-DISCOVERY (STM32L4R9) |
+    | `b-l475e-iot01a` | B-L475E-IOT01A IoT Discovery kit |
+    | `steval-stlcs01v1` | STEVAL-STLCS01V1 sensor tile board |
+  </Tab>
+</Tabs>
+
+## Configuring and building
+
+<Steps>
+  <Step title="Select a board configuration">
+    Run `configure.sh` (or `tools/configure.py`) with the `<board>:<config>` pair.
+
+    ```bash
+    cd nuttx
+    ./tools/configure.sh stm32f4discovery:nsh
+    ```
+  </Step>
+  <Step title="Optionally customise via menuconfig">
+    ```bash
+    make menuconfig
+    ```
+  </Step>
+  <Step title="Build the firmware">
+    ```bash
+    make -j$(nproc)
+    ```
+
+    The output files are `nuttx` (ELF) and `nuttx.bin` (raw binary).
+  </Step>
+  <Step title="Flash the board">
+    Use OpenOCD, ST-LINK, or `st-flash` to program the binary:
+
+    ```bash
+    st-flash write nuttx.bin 0x08000000
+    ```
+  </Step>
+</Steps>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Platforms overview" href="/platforms/overview" icon="map">
+    Directory structure and architecture overview for all supported platforms.
+  </Card>
+  <Card title="Pixhawk flight controllers" href="/platforms/pixhawk" icon="plane">
+    Pixhawk boards that use STM32F7 and STM32H7 MCUs.
+  </Card>
+  <Card title="Device driver guide" href="/guides/device-drivers" icon="plug">
+    Writing and registering NuttX device drivers.
+  </Card>
+  <Card title="Porting guide" href="/guides/porting" icon="wrench">
+    How to port NuttX to a new STM32 board.
+  </Card>
+</CardGroup>

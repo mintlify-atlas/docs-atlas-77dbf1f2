@@ -1,0 +1,359 @@
+---
+title: "Write a NuttX device driver"
+description: "How to implement a NuttX character or block driver: file_operations struct, open/close/read/write/ioctl callbacks, and registering with register_driver()."
+---
+
+NuttX drivers are kernel modules that expose hardware through the standard POSIX file API — `open()`, `read()`, `write()`, `ioctl()`, and `close()`. A character driver registers itself at a path in the pseudo-filesystem (such as `/dev/mydevice`) by filling out a `struct file_operations` vtable and calling `register_driver()`. User applications then access the device with ordinary file calls, and the OS routes them to your callbacks. This guide builds a minimal character driver from scratch, then covers the differences for block drivers.
+
+## The file_operations struct
+
+Every character driver is defined by a `struct file_operations` (from `include/nuttx/fs/fs.h`):
+
+```c
+struct file_operations
+{
+  int     (*open)(FAR struct file *filep);
+  int     (*close)(FAR struct file *filep);
+  ssize_t (*read)(FAR struct file *filep, FAR char *buffer, size_t buflen);
+  ssize_t (*write)(FAR struct file *filep, FAR const char *buffer,
+                   size_t buflen);
+  off_t   (*seek)(FAR struct file *filep, off_t offset, int whence);
+  int     (*ioctl)(FAR struct file *filep, int cmd, unsigned long arg);
+  int     (*poll)(FAR struct file *filep, struct pollfd *fds, bool setup);
+#ifndef CONFIG_DISABLE_PSEUDOFS_OPERATIONS
+  int     (*unlink)(FAR struct inode *inode);
+#endif
+};
+```
+
+Set callbacks you don't need to `NULL`. The OS checks for `NULL` before calling each one and returns `ENOSYS` automatically.
+
+The `struct file` passed to each callback carries:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `f_inode` | `struct inode *` | The inode that holds your `i_private` driver state |
+| `f_priv` | `void *` | Per-open-instance private data you set in `open` |
+| `f_pos` | `off_t` | Current file position, managed by `seek` |
+| `f_oflags` | `int` | Open flags (`O_RDONLY`, `O_WRONLY`, etc.) |
+
+<Steps>
+
+<Step title="Define your driver state">
+
+Allocate a private structure to hold all driver state. Use `kmm_zalloc()` so it is zero-initialized.
+
+```c
+/* drivers/mydev/mydev.c */
+
+#include <nuttx/config.h>
+#include <nuttx/fs/fs.h>
+#include <nuttx/kmalloc.h>
+#include <nuttx/semaphore.h>
+
+struct mydev_dev_s
+{
+  sem_t    md_exclsem;   /* Mutual exclusion semaphore */
+  uint32_t md_regbase;   /* Hardware register base address */
+  uint8_t  md_refcount;  /* Number of open file descriptors */
+};
+```
+
+</Step>
+
+<Step title="Implement open and close">
+
+`open` is called each time a process calls `open()` on your device path. Use it to allocate per-open state and track reference counts. Store per-open data in `filep->f_priv`.
+
+```c
+static int mydev_open(FAR struct file *filep)
+{
+  FAR struct inode        *inode;
+  FAR struct mydev_dev_s  *priv;
+  int ret;
+
+  inode = filep->f_inode;
+  priv  = (FAR struct mydev_dev_s *)inode->i_private;
+
+  ret = nxsem_wait(&priv->md_exclsem);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  priv->md_refcount++;
+  nxsem_post(&priv->md_exclsem);
+  return OK;
+}
+
+static int mydev_close(FAR struct file *filep)
+{
+  FAR struct inode        *inode;
+  FAR struct mydev_dev_s  *priv;
+  int ret;
+
+  inode = filep->f_inode;
+  priv  = (FAR struct mydev_dev_s *)inode->i_private;
+
+  ret = nxsem_wait(&priv->md_exclsem);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  priv->md_refcount--;
+  nxsem_post(&priv->md_exclsem);
+  return OK;
+}
+```
+
+<Tip>
+Always take the exclusion semaphore before touching shared state. Use `nxsem_wait()` (not `sem_wait()`) inside drivers — it does not modify `errno` and does not create a cancellation point.
+</Tip>
+
+</Step>
+
+<Step title="Implement read and write">
+
+Return the number of bytes transferred on success, or a negative `errno` value on error. The OS copies data between user and kernel space for you in flat builds; in protected builds, use `copy_to_user()` / `copy_from_user()`.
+
+```c
+static ssize_t mydev_read(FAR struct file *filep, FAR char *buffer,
+                          size_t buflen)
+{
+  FAR struct inode        *inode;
+  FAR struct mydev_dev_s  *priv;
+  ssize_t nread;
+
+  inode = filep->f_inode;
+  priv  = (FAR struct mydev_dev_s *)inode->i_private;
+
+  if (buflen == 0)
+    {
+      return 0;
+    }
+
+  /* Read from hardware and place result in buffer */
+  nread = mydev_hw_read(priv->md_regbase, buffer, buflen);
+  if (nread < 0)
+    {
+      return nread;   /* Return negative errno */
+    }
+
+  filep->f_pos += nread;
+  return nread;
+}
+
+static ssize_t mydev_write(FAR struct file *filep, FAR const char *buffer,
+                           size_t buflen)
+{
+  FAR struct inode        *inode;
+  FAR struct mydev_dev_s  *priv;
+  ssize_t nwritten;
+
+  inode = filep->f_inode;
+  priv  = (FAR struct mydev_dev_s *)inode->i_private;
+
+  nwritten = mydev_hw_write(priv->md_regbase, buffer, buflen);
+  if (nwritten < 0)
+    {
+      return nwritten;
+    }
+
+  filep->f_pos += nwritten;
+  return nwritten;
+}
+```
+
+</Step>
+
+<Step title="Implement ioctl">
+
+`ioctl` handles device-specific control commands. Define your command codes using the `_IOC` macro family (from `include/nuttx/fs/ioctl.h`) to avoid collisions with system-defined codes.
+
+```c
+/* include/nuttx/mydev.h */
+#define MYDEV_IOC_RESET   _IOC(MYDEV_IOC_TYPE, 0)
+#define MYDEV_IOC_GETSTAT _IOC(MYDEV_IOC_TYPE, 1)
+#define MYDEV_IOC_TYPE    0xAB   /* Unique to your driver */
+
+/* In your driver: */
+static int mydev_ioctl(FAR struct file *filep, int cmd, unsigned long arg)
+{
+  FAR struct inode        *inode;
+  FAR struct mydev_dev_s  *priv;
+  int ret = OK;
+
+  inode = filep->f_inode;
+  priv  = (FAR struct mydev_dev_s *)inode->i_private;
+
+  switch (cmd)
+    {
+      case MYDEV_IOC_RESET:
+        mydev_hw_reset(priv->md_regbase);
+        break;
+
+      case MYDEV_IOC_GETSTAT:
+        {
+          FAR uint32_t *status = (FAR uint32_t *)arg;
+          *status = mydev_hw_status(priv->md_regbase);
+        }
+        break;
+
+      default:
+        ret = -ENOTTY;  /* Unknown command */
+        break;
+    }
+
+  return ret;
+}
+```
+
+</Step>
+
+<Step title="Declare the file_operations table">
+
+Assemble the vtable as a `static const` so it lives in flash/ROM.
+
+```c
+/* From drivers/leds/userled_upper.c — real NuttX example */
+
+static const struct file_operations userled_fops =
+{
+  userled_open,   /* open  */
+  userled_close,  /* close */
+  NULL,           /* read  */
+  userled_write,  /* write */
+  NULL,           /* seek  */
+  userled_ioctl,  /* ioctl */
+  NULL            /* poll  */
+#ifndef CONFIG_DISABLE_PSEUDOFS_OPERATIONS
+  , NULL          /* unlink */
+#endif
+};
+```
+
+Your driver follows the same pattern, substituting your callback names.
+
+</Step>
+
+<Step title="Register the driver">
+
+Call `register_driver()` during board or driver initialization. This creates the inode in the pseudo-filesystem and makes the device path accessible.
+
+```c
+int mydev_register(const char *devpath, uint32_t regbase)
+{
+  FAR struct mydev_dev_s *priv;
+  int ret;
+
+  /* Allocate private state */
+
+  priv = (FAR struct mydev_dev_s *)kmm_zalloc(sizeof(struct mydev_dev_s));
+  if (priv == NULL)
+    {
+      return -ENOMEM;
+    }
+
+  nxsem_init(&priv->md_exclsem, 0, 1);
+  priv->md_regbase = regbase;
+
+  /* Register as a character driver */
+
+  ret = register_driver(devpath, &mydev_fops, 0666, priv);
+  if (ret < 0)
+    {
+      nxsem_destroy(&priv->md_exclsem);
+      kmm_free(priv);
+    }
+
+  return ret;
+}
+```
+
+Call this from your board's `board_early_initialize()` or `board_late_initialize()`:
+
+```c
+void board_late_initialize(void)
+{
+  mydev_register("/dev/mydevice0", MYDEV_BASE_ADDR);
+}
+```
+
+</Step>
+
+<Step title="Test from NSH">
+
+Once the device is registered, test it directly from the NuttX shell:
+
+```text
+nsh> ls /dev
+nsh> cat /dev/mydevice0
+nsh> echo "hello" > /dev/mydevice0
+```
+
+For ioctl testing, write a small C application that opens the device and calls `ioctl()` with your command codes.
+
+</Step>
+
+</Steps>
+
+## Block driver differences
+
+Block drivers use `struct block_operations` instead of `struct file_operations`. The key differences are that `read` and `write` work in whole sectors rather than bytes, and the `open`/`close` callbacks receive a `struct inode *` rather than a `struct file *`:
+
+```c
+struct block_operations
+{
+  int     (*open)(FAR struct inode *inode);
+  int     (*close)(FAR struct inode *inode);
+  ssize_t (*read)(FAR struct inode *inode, FAR unsigned char *buffer,
+                  blkcnt_t start_sector, unsigned int nsectors);
+  ssize_t (*write)(FAR struct inode *inode, FAR const unsigned char *buffer,
+                   blkcnt_t start_sector, unsigned int nsectors);
+  int     (*geometry)(FAR struct inode *inode, FAR struct geometry *geometry);
+  int     (*ioctl)(FAR struct inode *inode, int cmd, unsigned long arg);
+#ifndef CONFIG_DISABLE_PSEUDOFS_OPERATIONS
+  int     (*unlink)(FAR struct inode *inode);
+#endif
+};
+```
+
+The `geometry` callback is mandatory — it returns the sector count and sector size, which filesystem drivers use to compute partition layout.
+
+Register a block driver with `register_blockdriver()` instead of `register_driver()`. Block devices appear in `/dev` (e.g. `/dev/sda`) and can be mounted with `mount -t vfat /dev/sda /mnt`.
+
+<Note>
+Block drivers are typically used for flash/SD storage. If you are exposing a byte-oriented peripheral (UART, sensor, custom ASIC), use a character driver instead.
+</Note>
+
+## Upper-half / lower-half pattern
+
+NuttX uses an upper-half / lower-half split for many driver classes (serial, SPI, I2C, LEDs, ADC). The upper half provides the `file_operations` vtable and all OS interaction; the lower half provides a hardware abstraction interface specific to the chip.
+
+Your board code instantiates the lower half and passes it to the upper half's registration function:
+
+```c
+/* Board code: create lower-half instance and bind to upper half */
+FAR struct userled_lowerhalf_s *lower = board_userled_lower_initialize();
+userled_register("/dev/userleds", lower);
+```
+
+This keeps chip-specific register access out of the generic upper layer. See `drivers/leds/userled_upper.c` for a complete real-world example.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Character driver reference" href="/reference/character-drivers">
+    Full reference for the character driver API.
+  </Card>
+  <Card title="Block driver reference" href="/reference/block-drivers">
+    Sector-oriented block driver API details.
+  </Card>
+  <Card title="Driver framework" href="/reference/driver-framework">
+    Inode, registration, and pseudo-filesystem internals.
+  </Card>
+  <Card title="Port NuttX to a new board" href="/guides/porting">
+    Where to call your driver registration in the board init sequence.
+  </Card>
+</CardGroup>

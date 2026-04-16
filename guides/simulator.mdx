@@ -1,0 +1,306 @@
+---
+title: "Run NuttX in the sim target"
+description: "Build and run the NuttX POSIX simulator on Linux or macOS to develop, test, and debug OS subsystems without requiring physical embedded hardware."
+---
+
+The NuttX simulator (`boards/sim/sim/sim`) compiles NuttX as a regular host process that runs on Linux or macOS. It implements a POSIX host-process abstraction so the NuttX scheduler, filesystem, networking stack, and application code all execute natively on your development machine — without any embedded hardware. The simulator is ideal for developing new OS features, debugging scheduler issues, testing the TCP/IP stack, and trying out NuttX before you have a physical board. This page covers building the simulator, the available configurations, networking setup, macOS-specific requirements, and debugging techniques.
+
+## What the simulator does and does not test
+
+<AccordionGroup>
+
+<Accordion title="What you can test in the simulator">
+  - NuttX task scheduler and priority queues
+  - POSIX API compliance (threads, semaphores, message queues, signals)
+  - Filesystem drivers (ROMFS, FATFS, SPIFFS, NuttxFS, SmartFS)
+  - TCP/IP stack (LwIP or uIP) via a Linux `tap` interface
+  - NSH shell commands and built-in applications
+  - C++ standard library (libcxx), Lua, Duktape scripting
+  - SMP (symmetric multi-processing) with `CONFIG_SMP=y`
+  - Loadable modules (ELF shared libraries)
+</Accordion>
+
+<Accordion title="Limitations">
+  - No real interrupt controller — interrupts are simulated with POSIX signals (`SIGUSR1`, `SIGALRM`).
+  - No round-robin preemption — context switches happen only at explicit yield or blocking points.
+  - No actual hardware peripherals — SPI, I2C, UART, GPIO, DMA cannot be tested.
+  - Architecture-specific code (assembly, chip-specific registers) is not exercised.
+  - Timing is host-OS-dependent and will differ from target timing.
+</Accordion>
+
+</AccordionGroup>
+
+## Available sim configurations
+
+The `boards/sim/sim/sim/configs/` directory contains 66 configurations. Common ones:
+
+| Configuration | Purpose |
+|---|---|
+| `nsh` | Basic NSH prompt — the default starting point |
+| `ostest` | Run the full NuttX OS test suite |
+| `tcpblaster` | TCP/IP networking stress test |
+| `smp` | Symmetric multi-processing with multiple host threads |
+| `elf` | ELF loadable binary support |
+| `lvgl` | LVGL graphics (requires X11 or framebuffer) |
+| `lua` | Lua scripting engine |
+| `romfs` | Read-only filesystem in flash |
+| `sotest` | Shared library (.so) test |
+| `posix_spawn` | POSIX process spawn test |
+| `nxwm` | NuttX window manager (requires X11) |
+
+<Steps>
+
+<Step title="Install build dependencies">
+
+<Tabs>
+
+<Tab title="Linux (Ubuntu/Debian)">
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  gcc g++ make \
+  kconfig-frontends \
+  libx11-dev        # only needed for nx11/nxwm configs
+```
+
+The sim target uses the host GCC toolchain — no cross-compiler is needed.
+
+</Tab>
+
+<Tab title="macOS">
+
+The macOS simulator requires the `x86_64-elf` ELF toolchain because macOS uses Mach-O binaries natively, but NuttX needs ELF format.
+
+```bash
+# Install Homebrew if not already present
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# Install the ELF cross-toolchain and build tools
+brew install x86_64-elf-gcc x86_64-elf-binutils
+brew install kconfig-frontends
+xcode-select --install   # Installs Command Line Tools
+```
+
+The `x86_64-elf-gcc` toolchain produces ELF binaries that NuttX can load and link. Without it, the simulator build will fail with link errors on macOS.
+
+<Warning>
+On Apple Silicon (M1/M2/M3) you must use Rosetta 2 or the `x86_64` variant of Homebrew at `/usr/local`. The NuttX sim target currently produces `x86_64` binaries only. Running under Rosetta works but is slower.
+</Warning>
+
+</Tab>
+
+</Tabs>
+
+</Step>
+
+<Step title="Clone the repository and configure">
+
+```bash
+git clone https://github.com/apache/nuttx.git nuttx
+git clone https://github.com/apache/nuttx-apps.git apps
+
+cd nuttx
+
+# Configure for the basic NSH shell
+./tools/configure.sh sim:nsh
+```
+
+The `configure.sh` script copies `boards/sim/sim/sim/configs/nsh/Make.defs` to `Make.defs` and `defconfig` to `.config` at the repository root.
+
+To choose a different configuration:
+
+```bash
+./tools/configure.sh sim:ostest     # OS test suite
+./tools/configure.sh sim:tcpblaster # Networking test
+```
+
+</Step>
+
+<Step title="Build">
+
+```bash
+make -j$(nproc)
+```
+
+A successful build produces a `nuttx` executable in the repository root. There is no firmware image — the simulator is a native host binary.
+
+<Tip>
+Add `V=1` to see each compiler invocation: `make V=1`. This is useful for diagnosing include path or flag problems during initial bring-up of new configurations.
+</Tip>
+
+</Step>
+
+<Step title="Run the simulator">
+
+```bash
+./nuttx
+```
+
+You will see the NSH login prompt:
+
+```text
+login: admin
+password: Administrator
+User Logged-in!
+
+NuttShell (NSH) NuttX-9.1.0
+MOTD: username=admin password=Administrator
+nsh> help
+```
+
+Use NSH commands as you would on real hardware. The simulator responds to the same commands:
+
+```text
+nsh> free
+nsh> ps
+nsh> ls /
+nsh> ostest
+```
+
+</Step>
+
+<Step title="Stop the simulator">
+
+From inside NSH:
+
+```text
+nsh> poweroff
+```
+
+If you do not have an NSH prompt, kill it from another terminal:
+
+```bash
+pkill nuttx
+```
+
+</Step>
+
+<Step title="Enable networking (Linux only)">
+
+The `tcpblaster` configuration includes a pre-configured network. The simulator uses a Linux `tap` device to exchange packets with the host.
+
+```bash
+make distclean
+./tools/configure.sh sim:tcpblaster
+make -j$(nproc)
+
+# Grant network capabilities without running as root
+sudo setcap cap_net_admin+ep ./nuttx
+
+# Run the simulator
+./nuttx
+```
+
+Set up the tap interface and routing from a separate terminal:
+
+```bash
+sudo ./tools/simhostroute.sh wlp0s20f3 on   # Replace with your interface name
+```
+
+Inside NuttX, bring up the network:
+
+```text
+nsh> ifup eth0
+nsh> ping -c 1 10.0.1.1
+```
+
+Verify external connectivity:
+
+```text
+nsh> ping -c 1 8.8.8.8
+PING 8.8.8.8 56 bytes of data
+56 bytes from 8.8.8.8: icmp_seq=0 time=10 ms
+```
+
+When finished, tear down the tap interface:
+
+```bash
+sudo ./tools/simhostroute.sh wlp0s20f3 off
+```
+
+<Note>
+The `simhostroute.sh` script sets the NuttX simulator's IP address to `10.0.1.2` and the host tap interface to `10.0.1.1`. These addresses are hard-coded in the `sim:tcpblaster` defconfig.
+</Note>
+
+</Step>
+
+<Step title="Run the OS test suite">
+
+The `ostest` configuration runs a comprehensive validation of scheduler, memory allocator, IPC primitives, and POSIX APIs:
+
+```bash
+make distclean
+./tools/configure.sh sim:ostest
+make -j$(nproc)
+./nuttx
+```
+
+NSH runs `ostest` automatically at startup. A successful run ends with:
+
+```text
+ostest_main: Exiting with status 0
+```
+
+Any failure prints the failing subtest name and a non-zero exit status.
+
+</Step>
+
+<Step title="Debug with GDB">
+
+The simulator binary is a native ELF with full debug symbols. Attach GDB directly:
+
+```bash
+gdb ./nuttx
+(gdb) break sched_addreadytorun
+(gdb) run
+```
+
+Set breakpoints on any NuttX kernel function, inspect task control blocks, and step through scheduler code — without a debug probe or JTAG interface.
+
+For memory error detection, use the `asan` configuration which builds with AddressSanitizer:
+
+```bash
+make distclean
+./tools/configure.sh sim:asan
+make -j$(nproc)
+./nuttx
+```
+
+</Step>
+
+</Steps>
+
+## Useful sim configurations for development
+
+<CardGroup cols={2}>
+  <Card title="sim:nsh" href="/components/nsh">
+    Start here. Gives you a working NSH shell with no extras — a clean base for adding features.
+  </Card>
+  <Card title="sim:ostest" href="/reference/posix-api">
+    Validates POSIX API compliance and scheduler correctness. Run this after any scheduler change.
+  </Card>
+  <Card title="sim:tcpblaster" href="/components/networking">
+    Full TCP/IP stack with tap networking. Use it to test LwIP configuration and TCP behaviour.
+  </Card>
+  <Card title="sim:smp" href="/reference/task-management">
+    Runs the scheduler across multiple host threads simulating multiple CPU cores.
+  </Card>
+</CardGroup>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Quickstart: building NuttX" href="/quickstart/building">
+    Building for a real target using a cross-compiler toolchain.
+  </Card>
+  <Card title="Quickstart: debugging" href="/quickstart/debugging">
+    GDB and OpenOCD for hardware targets.
+  </Card>
+  <Card title="NSH shell" href="/components/nsh">
+    Full reference for NSH commands available in the simulator.
+  </Card>
+  <Card title="Networking" href="/components/networking">
+    NuttX TCP/IP stack configuration details.
+  </Card>
+</CardGroup>

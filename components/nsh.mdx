@@ -1,0 +1,246 @@
+---
+title: "NuttShell (NSH) embedded shell"
+description: "NuttShell (NSH): a small bash-like shell for NuttX with built-in commands, scripting, startup scripts, login, Telnet access, and rich Kconfig options."
+---
+
+NuttShell (NSH) is a compact, bash-inspired interactive shell for NuttX that lives in `apps/nshlib/`. It is the primary human interface to a running NuttX system, reachable over a serial console, USB CDC/ACM connection, or Telnet session. NSH provides file system navigation, task and process management, network configuration, memory inspection, and a scripting engine—all selectable individually at build time so the memory footprint stays minimal on resource-constrained targets. When you see the `nsh>` prompt you have access to a rich set of built-in commands that exercise every major NuttX subsystem.
+
+## Starting NSH
+
+When NuttX boots and NSH is enabled, the welcome message appears on the configured console:
+
+```
+NuttShell (NSH) NuttX-12.x
+nsh>
+```
+
+<Note>
+  USB console start-up requires pressing **Enter** three times after the USB serial device enumerates. This ensures the host terminal application is ready and discards any AT modem commands the host OS sends automatically.
+</Note>
+
+Enable NSH in Kconfig:
+
+```kconfig
+CONFIG_NSH_LIBRARY=y
+CONFIG_NSH_CONSOLE=y        # serial console front-end
+# CONFIG_NSH_TELNET=y       # optional: Telnet front-end (requires TCP)
+```
+
+## Built-in commands
+
+The following commands are built into NSH. Individual commands can be compiled out with their `CONFIG_NSH_DISABLE_*` option to reduce footprint.
+
+<AccordionGroup>
+  <Accordion title="File system commands">
+    | Command | Description |
+    |---------|-------------|
+    | `ls [-lRs] <path>` | List directory contents |
+    | `cd <path>` | Change working directory |
+    | `pwd` | Print working directory |
+    | `cat <file>` | Print file contents to stdout |
+    | `cp <src> <dst>` | Copy a file |
+    | `mv <src> <dst>` | Move or rename a file |
+    | `rm <file>` | Remove a file |
+    | `mkdir <dir>` | Create a directory |
+    | `rmdir <dir>` | Remove an empty directory |
+    | `mount [-t <type>] <dev> <mnt>` | Mount a filesystem |
+    | `umount <mnt>` | Unmount a filesystem |
+    | `df` | Show filesystem disk usage |
+    | `dd if=<src> of=<dst> [bs=N] [count=N]` | Block copy between devices or files |
+    | `hexdump <file>` | Hex dump of file contents |
+    | `truncate -s <size> <file>` | Set file size |
+    | `ln [-s] <target> <link>` | Create hard or symbolic link |
+    | `readlink <link>` | Print symbolic link target |
+  </Accordion>
+
+  <Accordion title="Process and task management">
+    | Command | Description |
+    |---------|-------------|
+    | `ps` | List running tasks (requires `CONFIG_FS_PROCFS`) |
+    | `kill [-<sig>] <pid>` | Send signal to a task |
+    | `sleep <sec>` | Delay for seconds |
+    | `usleep <usec>` | Delay for microseconds |
+    | `exec <file>` | Execute a file |
+    | `sh <script>` | Run an NSH script file |
+    | `time <cmd>` | Measure command execution time |
+    | `reboot` | Reboot the system |
+    | `poweroff` | Power off the system |
+    | `shutdown` | Shutdown or reboot |
+  </Accordion>
+
+  <Accordion title="Network commands">
+    | Command | Description |
+    |---------|-------------|
+    | `ifconfig` | Show / configure network interfaces |
+    | `ifup <iface>` | Bring a network interface up |
+    | `ifdown <iface>` | Take a network interface down |
+    | `ping [-c <n>] [-i <ms>] <host>` | Send ICMPv4 echo requests |
+    | `ping6 [-c <n>] <host>` | Send ICMPv6 echo requests |
+    | `arp [-t\|-a\|-d\|-s]` | Manipulate the ARP table |
+    | `addroute <target> [<mask>] <router>` | Add a routing table entry |
+    | `delroute <target> [<mask>]` | Delete a routing table entry |
+    | `route` | Display the routing table |
+    | `nslookup <hostname>` | DNS lookup |
+    | `wget <url>` | Fetch a file via HTTP (requires TCP) |
+    | `get <host> <file>` | Fetch a file via TFTP (requires UDP) |
+    | `put <host> <file>` | Upload a file via TFTP |
+    | `telnetd` | Start the Telnet daemon |
+  </Accordion>
+
+  <Accordion title="System information and memory">
+    | Command | Description |
+    |---------|-------------|
+    | `free` | Show heap memory statistics |
+    | `uname [-a]` | Print system information |
+    | `dmesg` | Display kernel log buffer |
+    | `irqinfo` | Show IRQ usage statistics |
+    | `mb / mh / mw <addr> [<val>]` | Read/write memory (byte/half/word) |
+    | `env` | List environment variables |
+    | `set <name> <value>` | Set a variable |
+    | `unset <name>` | Unset a variable |
+    | `export <name> [<value>]` | Promote variable to environment |
+  </Accordion>
+
+  <Accordion title="Filesystem utilities">
+    | Command | Description |
+    |---------|-------------|
+    | `mkfatfs [-F <12\|16\|32>] <dev>` | Format a block device with FAT |
+    | `mkrd [-m <minor>] [-s <sec>] <nsectors>` | Create a RAM disk |
+    | `mkfifo <path>` | Create a named FIFO |
+    | `losetup [-d] <dev> <file>` | Associate loop device with a file |
+    | `nfsmount <host> <export> <mnt>` | Mount an NFS share |
+  </Accordion>
+</AccordionGroup>
+
+## Example session
+
+```
+NuttShell (NSH) NuttX-12.x
+nsh> uname -a
+NuttX 12.4.0 ... arm
+
+nsh> free
+             total       used       free    largest  nused  nfree
+      Mem:  131072      12480     118592     118592     41      1
+
+nsh> ls /dev
+/dev:
+ console
+ null
+ ttyS0
+ mmcsd0
+
+nsh> mount -t vfat /dev/mmcsd0 /mnt/sd
+nsh> ls /mnt/sd
+/mnt/sd:
+ log.txt
+
+nsh> cat /mnt/sd/log.txt
+hello from NuttX
+
+nsh> ps
+  PID GROUP PRI POLICY   TYPE    NPX STATE    EVENT     SIGMASK   STACK USED FILLED COMMAND
+    0     0   0 FIFO     Kthread  -  Ready              00000000   1200  536  44.6%  Idle Task
+    1     1 100 RR       Task     -  Waiting  Semaphore  00000000   2000  876  43.8%  nsh_main
+
+nsh> ping -c 3 192.168.1.1
+PING 192.168.1.1 56 bytes of data
+56 bytes from 192.168.1.1: icmp_seq=0 time=2 ms
+56 bytes from 192.168.1.1: icmp_seq=1 time=1 ms
+56 bytes from 192.168.1.1: icmp_seq=2 time=2 ms
+```
+
+## Scripting
+
+NSH supports `if-then[-else]-fi`, `while-do-done`, and `until-do-done` constructs, making it suitable for startup and test scripts.
+
+```bash
+#!/bin/nsh
+# /etc/init.d/rcS — example startup script
+
+# Mount a FAT RAM disk at /tmp
+mkrd -m 1 -s 512 1024
+mkfatfs /dev/ram1
+mount -t vfat /dev/ram1 /tmp
+
+# Bring up the network interface
+ifup eth0
+```
+
+Scripts are executed with the `sh` command:
+
+```
+nsh> sh /etc/init.d/rcS
+```
+
+Variable substitution, command output capture (back-quotes), and string concatenation are available when `CONFIG_NSH_CMDPARMS` and `CONFIG_NSH_ARGCAT` are enabled.
+
+## Startup scripts
+
+<Steps>
+  <Step title="Enable ROMFS /etc">
+    Set `CONFIG_NSH_ROMFSETC=y`. NSH will mount a tiny ROMFS image at `/etc` containing `init.d/rc.sysinit` and `init.d/rcS`.
+  </Step>
+
+  <Step title="Customise rc.sysinit">
+    Edit `apps/nshlib/rc.sysinit.template`. The default creates a FAT RAM disk at `/tmp`:
+
+    ```bash
+    mkrd -m 1 -s 512 1024
+    mkfatfs /dev/ram1
+    mount -t vfat /dev/ram1 /tmp
+    ```
+  </Step>
+
+  <Step title="Rebuild the ROMFS image">
+    Run `tools/mkromfsimg.sh` to regenerate `apps/nshlib/nsh_romfsimg.h` from the updated template, then rebuild NuttX.
+  </Step>
+
+  <Step title="Add startup logic to rcS">
+    `rcS` runs after `rc.sysinit`. Place application-specific initialisation (network bring-up, sensor init, etc.) here.
+  </Step>
+</Steps>
+
+## Login and authentication
+
+NSH can require a password at login with `CONFIG_NSH_LOGIN=y`. Users are managed with the `useradd` and `userdel` built-in commands (require `CONFIG_NSH_LOGIN_PASSWD`).
+
+```kconfig
+CONFIG_NSH_LOGIN=y
+CONFIG_NSH_LOGIN_PASSWD=y      # passwd file authentication
+CONFIG_NSH_LOGIN_USERNAME="admin"
+CONFIG_NSH_LOGIN_PASSWORD="secret"
+```
+
+## Key configuration options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `CONFIG_NSH_CONSOLE` | `y` | Enable serial console front-end |
+| `CONFIG_NSH_TELNET` | `n` | Enable Telnet front-end |
+| `CONFIG_NSH_READLINE` | `y` | Minimal readline (backspace only) |
+| `CONFIG_NSH_CLE` | `n` | EMACS-like command line editor (+1.5 KB) |
+| `CONFIG_NSH_LINELEN` | `80` | Max command line length |
+| `CONFIG_NSH_MAXARGUMENTS` | `6` | Max arguments per command |
+| `CONFIG_NSH_BUILTIN_APPS` | `y` | Allow registered built-in apps |
+| `CONFIG_NSH_ROMFSETC` | `n` | Mount ROMFS /etc with startup scripts |
+| `CONFIG_NSH_DISABLESCRIPT` | `n` | Disable scripting to save flash |
+| `CONFIG_NSH_DISABLEBG` | `n` | Disable background (`&`) commands |
+| `CONFIG_NSH_VARS` | `n` | Add local NSH variables (not env) |
+| `CONFIG_NSH_FILEIOSIZE` | `1024` | Static I/O buffer size for file access |
+| `CONFIG_NSH_TELNETD_PORT` | `23` | Telnet daemon listen port |
+
+<CardGroup cols={2}>
+  <Card title="Filesystem layer" href="/components/filesystem">
+    Filesystems and mount commands used from NSH.
+  </Card>
+  <Card title="TCP/IP networking" href="/components/networking">
+    Network commands (ifconfig, ping, wget) and configuration.
+  </Card>
+  <Card title="Task scheduler" href="/components/scheduler">
+    ps output and scheduling policies visible in NSH.
+  </Card>
+  <Card title="Quickstart: running NuttX" href="/quickstart/running">
+    Connect to the NSH prompt for the first time.
+  </Card>
+</CardGroup>

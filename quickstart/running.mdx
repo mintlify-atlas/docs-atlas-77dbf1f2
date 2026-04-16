@@ -1,0 +1,164 @@
+---
+title: "Run NuttX on hardware"
+description: "Flash NuttX firmware to a target board via OpenOCD or J-Link, connect a serial console, and interact with your first NuttShell session."
+---
+
+With a compiled NuttX binary in hand, the next step is to flash it onto your hardware and interact with the system through the NuttShell (NSH). This guide uses a Nucleo F103RB board as the reference platform — ST Nucleo and Discovery boards are a good starting point because they integrate an on-board ST-Link programmer/debugger exposed over USB and provide a UART console over the same USB connection, requiring no extra hardware.
+
+## Flash the firmware
+
+### Using OpenOCD
+
+OpenOCD supports a large number of programmers and target microcontrollers. The project does not publish frequent stable releases, so the latest Git version is recommended for support of newer hardware.
+
+<Tabs>
+  <Tab title="Install stable (Ubuntu)">
+    ```bash
+    sudo apt install openocd
+    ```
+  </Tab>
+  <Tab title="Build from source (latest)">
+    ```bash
+    git clone git://git.code.sf.net/p/openocd/code openocd
+    cd openocd
+    ./bootstrap
+    ./configure --prefix=install/
+    make install
+    ```
+
+    The resulting installation is under `openocd/install/`. Add `openocd/install/bin` to your `PATH`.
+  </Tab>
+</Tabs>
+
+Connect the board via USB, then flash the binary:
+
+```bash
+cd nuttx/
+openocd -f interface/stlink-v2.cfg -f target/stm32f1x.cfg \
+  -c 'init' \
+  -c 'program nuttx/nuttx.bin verify reset' \
+  -c 'shutdown'
+```
+
+Adapt the `-f interface/` and `-f target/` arguments to match your programmer and MCU. For example, for an i.MX RT board with a J-Link adapter:
+
+```bash
+openocd -f interface/jlink.cfg -f target/imxrt.cfg \
+  -c 'init' \
+  -c 'program nuttx/nuttx.bin verify reset' \
+  -c 'shutdown'
+```
+
+### Using J-Link
+
+Segger J-Link provides its own command-line flash utility. The NuttX source includes a J-Link GDB init file at `tools/jlink-nuttx.c`. To flash using `JLinkExe`:
+
+```bash
+JLinkExe -device STM32F103RB -if SWD -speed 4000 -autoconnect 1 \
+  -CommandFile flash.jlink
+```
+
+Where `flash.jlink` contains:
+
+```
+loadfile nuttx/nuttx.bin
+r
+g
+exit
+```
+
+<Note>
+  J-Link works well with Windows native tools. When building under a Linux VM or Cygwin, you can still use Segger J-Link Windows tools with the build output by accessing the files through the shared filesystem path.
+</Note>
+
+## Connect to the NuttShell
+
+Once the board is flashed it will reset automatically and start NuttX. The NuttShell prompt (`nsh>`) is available over the serial UART. On Nucleo boards, the ST-Link USB connection exposes a virtual COM port — no USB-to-UART adapter is needed.
+
+Find the serial device:
+
+```bash
+# Linux: usually /dev/ttyUSB0 or /dev/ttyACM0
+ls /dev/tty*
+```
+
+Open a terminal at 115200 baud:
+
+<Tabs>
+  <Tab title="picocom (CLI)">
+    ```bash
+    picocom -b 115200 /dev/ttyUSB0
+    ```
+  </Tab>
+  <Tab title="gtkterm (GUI)">
+    ```bash
+    gtkterm -s 115200 -p /dev/ttyUSB0
+    ```
+  </Tab>
+  <Tab title="screen">
+    ```bash
+    screen /dev/ttyUSB0 115200
+    ```
+  </Tab>
+</Tabs>
+
+Press **Enter** if you see no output — the board may be waiting for console input.
+
+<Tip>
+  On Linux, you may need to add yourself to the `dialout` group to access serial ports without `sudo`:
+
+  ```bash
+  sudo gpasswd -a $USER dialout
+  ```
+
+  Log out and back in for the group change to take effect.
+</Tip>
+
+## First NuttShell commands
+
+Once connected you will see the `nsh>` prompt. Try these commands to verify the system is running correctly:
+
+```
+nsh> uname -a
+NuttX 10.1.0 ... arm ...
+
+nsh> free
+             total       used       free    largest
+Mem:         65536      14320      51216      51216
+
+nsh> ls /
+/:
+ dev/
+ proc/
+ etc/
+
+nsh> ls /dev
+/dev:
+ console
+ null
+ ttyS0
+
+nsh> ps
+  PID GROUP PRI POLICY   TYPE    NPX STATE    EVENT     SIGMASK  STACK USED FILLED COMMAND
+    0     0   0 FIFO     Kthread   - Running            00000000   2048  752  36.7%  Idle Task
+    1     1 100 RR       Task      - Waiting  Semaphore 00000000   2044  580  28.4%  init
+```
+
+| Command | Description |
+|---------|-------------|
+| `uname -a` | Print NuttX version, architecture, and build date |
+| `free` | Show memory usage (total, used, free, largest contiguous block) |
+| `ls` | List directory contents |
+| `ps` | List running tasks with PID, priority, state, and stack usage |
+| `help` | List all available NSH built-in commands |
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Debug NuttX applications" icon="bug" href="/quickstart/debugging">
+    Connect GDB over OpenOCD or J-Link to set breakpoints, inspect tasks, and trace USB events.
+  </Card>
+  <Card title="NuttShell reference" icon="terminal" href="/components/nsh">
+    Full reference for NSH commands, scripting, and configuration options.
+  </Card>
+</CardGroup>

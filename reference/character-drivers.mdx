@@ -1,0 +1,422 @@
+---
+title: "Character driver API reference"
+description: "Complete reference for the file_operations struct, standard callbacks (open, close, read, write, ioctl, poll, seek), and a minimal working driver skeleton."
+---
+
+Character drivers are the most common driver type in NuttX. They expose a device to user space as a byte-stream file under `/dev/` and are accessed via the standard POSIX calls `open()`, `read()`, `write()`, `ioctl()`, and `poll()`. A character driver supplies a `struct file_operations` vtable to `register_driver()`, and the VFS forwards all system calls on that file descriptor directly to the corresponding function pointer. Examples in the NuttX source tree include serial UARTs (`drivers/serial/serial.c`), user-space LEDs (`drivers/leds/userled_upper.c`), and GPIO lines. The LED driver is a clean reference implementation: it uses only `open`, `close`, `write`, and `ioctl`, leaving unused callbacks as `NULL`.
+
+<Note>
+Character drivers receive a `struct file *` on every callback. This is different from block drivers, which receive `struct inode *`. The `struct file` carries per-open-instance state in `f_priv`, while `filep->f_inode->i_private` holds state shared across all open file descriptors for this device.
+</Note>
+
+## `struct file_operations`
+
+Defined in `include/nuttx/fs/fs.h`, this is the complete vtable that a character driver registers:
+
+```c
+struct file_operations
+{
+  int     (*open)(FAR struct file *filep);
+  int     (*close)(FAR struct file *filep);
+  ssize_t (*read)(FAR struct file *filep, FAR char *buffer, size_t buflen);
+  ssize_t (*write)(FAR struct file *filep, FAR const char *buffer,
+                   size_t buflen);
+  off_t   (*seek)(FAR struct file *filep, off_t offset, int whence);
+  int     (*ioctl)(FAR struct file *filep, int cmd, unsigned long arg);
+  int     (*poll)(FAR struct file *filep, struct pollfd *fds, bool setup);
+#ifndef CONFIG_DISABLE_PSEUDOFS_OPERATIONS
+  int     (*unlink)(FAR struct inode *inode);
+#endif
+};
+```
+
+Any member may be set to `NULL`. The VFS returns `-ENOSYS` for `NULL` callbacks (except `seek`, which returns the current position unchanged, and `unlink`, which is silently skipped).
+
+## The `file` structure
+
+Every character driver callback receives a `struct file *` as its first argument:
+
+```c
+struct file
+{
+  int               f_oflags;   /* Open mode flags (O_RDONLY, O_WRONLY, ...) */
+  off_t             f_pos;      /* Current file position */
+  FAR struct inode *f_inode;    /* Points to the driver's inode */
+  FAR void         *f_priv;     /* Per-open instance state (set by open()) */
+};
+```
+
+Retrieve shared driver state with `filep->f_inode->i_private` and per-open state with `filep->f_priv`.
+
+## Callback reference
+
+<AccordionGroup>
+  <Accordion title="open — initialise a new file descriptor">
+    ```c
+    int (*open)(FAR struct file *filep);
+    ```
+
+    Called once each time a task calls `open()` on the device path. Allocate per-open state here and store it in `filep->f_priv`. Increment the device reference count if the driver needs to track how many fds are open.
+
+    <ParamField path="filep" type="struct file *" required>
+      The new file instance. On entry `filep->f_priv` is `NULL`. `filep->f_oflags` contains the flags passed to `open()` (e.g. `O_RDONLY`, `O_NONBLOCK`).
+    </ParamField>
+
+    Returns `0` on success or a negated `errno` value. Return `-ENODEV` if the hardware is unavailable, or `-EMFILE` if the driver limits concurrent opens.
+
+    **Pattern from `drivers/leds/userled_upper.c`:**
+    ```c
+    static int userled_open(FAR struct file *filep)
+    {
+      FAR struct inode              *inode;
+      FAR struct userled_upperhalf_s *priv;
+      FAR struct userled_open_s     *opriv;
+      int ret;
+
+      inode = filep->f_inode;
+      priv  = (FAR struct userled_upperhalf_s *)inode->i_private;
+
+      opriv = (FAR struct userled_open_s *)
+              kmm_zalloc(sizeof(struct userled_open_s));
+      if (!opriv)
+        {
+          return -ENOMEM;
+        }
+
+      /* Link into the open list and attach to the file */
+      opriv->bo_flink = priv->lu_open;
+      priv->lu_open   = opriv;
+      filep->f_priv   = opriv;
+      return OK;
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="close — release per-fd resources">
+    ```c
+    int (*close)(FAR struct file *filep);
+    ```
+
+    Called when the file descriptor is closed. Free any memory allocated in `open()` and pointed to by `filep->f_priv`. Do not free shared driver state (`inode->i_private`) here unless this is the last open reference and the driver is being shut down.
+
+    <ParamField path="filep" type="struct file *" required>
+      The file instance being closed. `filep->f_priv` holds the per-open state allocated during `open()`.
+    </ParamField>
+
+    Returns `0` on success.
+  </Accordion>
+
+  <Accordion title="read — transfer bytes to user space">
+    ```c
+    ssize_t (*read)(FAR struct file *filep, FAR char *buffer, size_t buflen);
+    ```
+
+    Called by `read()` and `pread()`. Copy up to `buflen` bytes into `buffer`. Update `filep->f_pos` if the device is seekable. For non-blocking I/O (`O_NONBLOCK` set in `f_oflags`), return `-EAGAIN` immediately if no data is ready.
+
+    <ParamField path="filep" type="struct file *" required>
+      The open file instance.
+    </ParamField>
+    <ParamField path="buffer" type="char *" required>
+      Destination buffer in the caller's address space.
+    </ParamField>
+    <ParamField path="buflen" type="size_t" required>
+      Maximum number of bytes to read.
+    </ParamField>
+
+    Returns the number of bytes read (may be less than `buflen` for a partial read), `0` for end-of-file, or a negated `errno` on error.
+  </Accordion>
+
+  <Accordion title="write — receive bytes from user space">
+    ```c
+    ssize_t (*write)(FAR struct file *filep, FAR const char *buffer,
+                     size_t buflen);
+    ```
+
+    Called by `write()` and `pwrite()`. Consume up to `buflen` bytes from `buffer`. Update `filep->f_pos` if the device is seekable. Return `-EAGAIN` for non-blocking writes when the device is busy.
+
+    <ParamField path="filep" type="struct file *" required>
+      The open file instance.
+    </ParamField>
+    <ParamField path="buffer" type="const char *" required>
+      Source buffer in the caller's address space.
+    </ParamField>
+    <ParamField path="buflen" type="size_t" required>
+      Number of bytes to write.
+    </ParamField>
+
+    Returns the number of bytes accepted, or a negated `errno` on error.
+  </Accordion>
+
+  <Accordion title="seek — reposition the file offset">
+    ```c
+    off_t (*seek)(FAR struct file *filep, off_t offset, int whence);
+    ```
+
+    Called by `lseek()`. Compute the new position based on `whence` (`SEEK_SET`, `SEEK_CUR`, `SEEK_END`) and `offset`, store it in `filep->f_pos`, and return the new position. Most character drivers (UARTs, sensors) leave this callback `NULL` because they do not support seeking.
+
+    <ParamField path="filep" type="struct file *" required>
+      The open file instance. Update `filep->f_pos` before returning.
+    </ParamField>
+    <ParamField path="offset" type="off_t" required>
+      Signed byte offset relative to the position indicated by `whence`.
+    </ParamField>
+    <ParamField path="whence" type="int" required>
+      `SEEK_SET` (absolute), `SEEK_CUR` (relative to current position), or `SEEK_END` (relative to end).
+    </ParamField>
+
+    Returns the resulting absolute file offset, or a negated `errno` on error (e.g. `-EINVAL` for an out-of-range position).
+  </Accordion>
+
+  <Accordion title="ioctl — device-specific control">
+    ```c
+    int (*ioctl)(FAR struct file *filep, int cmd, unsigned long arg);
+    ```
+
+    Called by `ioctl()`. Dispatch on `cmd` to implement device-specific operations. Return `-ENOTTY` for any command the driver does not recognise; this is the POSIX-specified error for unsupported ioctls.
+
+    <ParamField path="filep" type="struct file *" required>
+      The open file instance.
+    </ParamField>
+    <ParamField path="cmd" type="int" required>
+      The ioctl command code, typically defined with the `_IOC()` macro family.
+    </ParamField>
+    <ParamField path="arg" type="unsigned long" required>
+      Command-specific argument. Commonly a pointer cast to `unsigned long`; always validate before dereferencing.
+    </ParamField>
+
+    Returns `0` on success, `-ENOTTY` for unknown commands, or another negated `errno` on error.
+  </Accordion>
+
+  <Accordion title="poll — wait for I/O readiness">
+    ```c
+    int (*poll)(FAR struct file *filep, struct pollfd *fds, bool setup);
+    ```
+
+    Called by `poll()` and `select()`. When `setup` is `true`, the driver should register `fds` so that it can later signal readiness by calling `poll_notify()`. When `setup` is `false`, the driver should deregister `fds`. Set `fds->revents` with the events that are currently ready before returning from a `setup=true` call.
+
+    <ParamField path="filep" type="struct file *" required>
+      The open file instance.
+    </ParamField>
+    <ParamField path="fds" type="struct pollfd *" required>
+      The poll descriptor to register or deregister. Contains `events` (requested) and `revents` (returned ready events).
+    </ParamField>
+    <ParamField path="setup" type="bool" required>
+      `true` to register `fds`; `false` to deregister.
+    </ParamField>
+
+    Returns `0` on success or a negated `errno` value.
+  </Accordion>
+
+  <Accordion title="unlink — inode teardown notification">
+    ```c
+    int (*unlink)(FAR struct inode *inode);
+    ```
+
+    Only compiled when `CONFIG_DISABLE_PSEUDOFS_OPERATIONS` is not set. Called by the VFS when the inode's reference count reaches zero after `unregister_driver()`. Free shared driver state (`inode->i_private`) here.
+
+    <ParamField path="inode" type="struct inode *" required>
+      The inode being removed from the pseudo-file system.
+    </ParamField>
+
+    Returns `0` on success.
+  </Accordion>
+</AccordionGroup>
+
+## Real driver example — user LED driver
+
+`drivers/leds/userled_upper.c` registers a write-only LED device. Its `file_operations` table shows the common pattern of leaving unused callbacks as `NULL`:
+
+```c
+/* From drivers/leds/userled_upper.c */
+
+static const struct file_operations userled_fops =
+{
+  userled_open,   /* open  */
+  userled_close,  /* close */
+  NULL,           /* read  — not supported */
+  userled_write,  /* write */
+  NULL,           /* seek  — not supported */
+  userled_ioctl,  /* ioctl */
+  NULL            /* poll  — not supported */
+#ifndef CONFIG_DISABLE_PSEUDOFS_OPERATIONS
+  , NULL          /* unlink */
+#endif
+};
+```
+
+The driver registers itself from its `userled_register()` initialisation function:
+
+```c
+ret = register_driver(devpath, &userled_fops, 0666, priv);
+```
+
+## Registration
+
+```c
+int register_driver(FAR const char *path,
+                    FAR const struct file_operations *fops,
+                    mode_t mode,
+                    FAR void *priv);
+
+int unregister_driver(FAR const char *path);
+```
+
+See [Driver registration and framework](/reference/driver-framework) for full parameter documentation, error codes, and the driver lifecycle.
+
+## Minimal working character driver skeleton
+
+This skeleton implements all callbacks using real types from `include/nuttx/fs/fs.h` and follows the upper/lower half pattern seen throughout the NuttX driver tree.
+
+```c
+#include <nuttx/config.h>
+#include <nuttx/fs/fs.h>
+#include <nuttx/kmalloc.h>
+#include <errno.h>
+#include <string.h>
+
+/* Shared driver state — one instance per registered device */
+struct mychar_dev_s
+{
+  /* Hardware handles, mutexes, circular buffers, etc. */
+  sem_t    exclsem;
+  bool     initialized;
+};
+
+/* Per-open-fd state */
+struct mychar_open_s
+{
+  bool closing;
+};
+
+/* ------------------------------------------------------------------ */
+/* Forward declarations                                                */
+/* ------------------------------------------------------------------ */
+
+static int     mychar_open (FAR struct file *filep);
+static int     mychar_close(FAR struct file *filep);
+static ssize_t mychar_read (FAR struct file *filep, FAR char *buffer,
+                             size_t buflen);
+static ssize_t mychar_write(FAR struct file *filep,
+                             FAR const char *buffer, size_t buflen);
+static int     mychar_ioctl(FAR struct file *filep, int cmd,
+                             unsigned long arg);
+
+/* ------------------------------------------------------------------ */
+/* Operations table                                                    */
+/* ------------------------------------------------------------------ */
+
+static const struct file_operations g_mychar_fops =
+{
+  mychar_open,   /* open  */
+  mychar_close,  /* close */
+  mychar_read,   /* read  */
+  mychar_write,  /* write */
+  NULL,          /* seek  — not supported */
+  mychar_ioctl,  /* ioctl */
+  NULL,          /* poll  — not supported */
+#ifndef CONFIG_DISABLE_PSEUDOFS_OPERATIONS
+  NULL,          /* unlink */
+#endif
+};
+
+/* ------------------------------------------------------------------ */
+/* Callback implementations                                            */
+/* ------------------------------------------------------------------ */
+
+static int mychar_open(FAR struct file *filep)
+{
+  FAR struct mychar_dev_s  *priv;
+  FAR struct mychar_open_s *opriv;
+
+  priv  = (FAR struct mychar_dev_s *)filep->f_inode->i_private;
+  opriv = (FAR struct mychar_open_s *)kmm_zalloc(sizeof(*opriv));
+  if (!opriv)
+    {
+      return -ENOMEM;
+    }
+
+  filep->f_priv = opriv;
+  return OK;
+}
+
+static int mychar_close(FAR struct file *filep)
+{
+  FAR struct mychar_open_s *opriv = filep->f_priv;
+  kmm_free(opriv);
+  filep->f_priv = NULL;
+  return OK;
+}
+
+static ssize_t mychar_read(FAR struct file *filep, FAR char *buffer,
+                            size_t buflen)
+{
+  /* Read data from hardware into buffer */
+  return 0; /* EOF / no data */
+}
+
+static ssize_t mychar_write(FAR struct file *filep,
+                             FAR const char *buffer, size_t buflen)
+{
+  /* Send buffer to hardware */
+  return buflen;
+}
+
+static int mychar_ioctl(FAR struct file *filep, int cmd, unsigned long arg)
+{
+  switch (cmd)
+    {
+      /* Handle device-specific commands here */
+      default:
+        return -ENOTTY;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Initialisation                                                      */
+/* ------------------------------------------------------------------ */
+
+int mychar_initialize(int minor)
+{
+  FAR struct mychar_dev_s *priv;
+  char devpath[16];
+  int ret;
+
+  priv = (FAR struct mychar_dev_s *)kmm_zalloc(sizeof(*priv));
+  if (!priv)
+    {
+      return -ENOMEM;
+    }
+
+  priv->initialized = true;
+
+  snprintf(devpath, sizeof(devpath), "/dev/mychar%d", minor);
+  ret = register_driver(devpath, &g_mychar_fops, 0666, priv);
+  if (ret < 0)
+    {
+      kmm_free(priv);
+    }
+
+  return ret;
+}
+```
+
+<Tip>
+Protect shared driver state with `nxsem_wait()` / `nxsem_post()` rather than `sem_wait()` inside kernel code. The `nx*` variants do not set `errno` and do not create cancellation points, which is the correct behaviour for internal OS interfaces.
+</Tip>
+
+## See also
+
+<Columns cols={2}>
+  <Card title="Driver registration and framework" href="/reference/driver-framework" icon="layers">
+    Inode system, `register_driver()`, and the complete driver lifecycle.
+  </Card>
+  <Card title="Block driver API" href="/reference/block-drivers" icon="hard-drive">
+    `block_operations` reference for sector-oriented storage devices.
+  </Card>
+  <Card title="Writing device drivers" href="/guides/device-drivers" icon="wrench">
+    End-to-end guide: hardware bring-up, upper/lower split, and testing.
+  </Card>
+  <Card title="POSIX API reference" href="/reference/posix-api" icon="book">
+    The POSIX calls (`open`, `read`, `write`, `ioctl`) that dispatch into these callbacks.
+  </Card>
+</Columns>

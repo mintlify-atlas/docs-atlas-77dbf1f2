@@ -1,0 +1,227 @@
+---
+title: "TCP/IP networking in NuttX"
+description: "NuttX network stack: IPv4/IPv6, BSD sockets, TCP/UDP/ICMP/IGMP/MLD, DHCP/DNS/NTP utilities, IEEE 802.15.4, Bluetooth LE, and 6LoWPAN."
+---
+
+NuttX includes a compact, fully integrated TCP/IP stack that provides a BSD-compatible socket interface to application code. The network subsystem lives under `net/` and is built from fine-grained source files so that only the protocols your application actually uses are linked into the final binary. The stack supports both IPv4 and IPv6 simultaneously, handles multiple physical network interfaces, and can forward packets between them. Radio network drivers—including IEEE 802.15.4 and Bluetooth LE—are first-class citizens connected through the same socket layer via dedicated address families.
+
+## Network stack layout
+
+```
+Application  socket() / bind() / connect() / send() / recv()
+                │
+         BSD socket layer  (net/socket/)
+                │
+     ┌──────────┼──────────────────────────┐
+     ▼          ▼                          ▼
+  net/tcp/   net/udp/     net/icmp(v6)/  net/igmp/  net/mld/
+     │          │
+     └────┬─────┘
+          ▼
+   net/devif/   (device interface, packet I/O)
+          │
+  ┌───────┼──────────────────────────────────────────┐
+  ▼       ▼                ▼                         ▼
+Ethernet  net/bluetooth/  net/ieee802154/  net/sixlowpan/
+(AF_INET) (AF_BLUETOOTH)  (AF_IEEE802154)  (6LoWPAN)
+```
+
+## Enabling the network
+
+The top-level switch is `CONFIG_NET`. From there every protocol family is enabled independently:
+
+```kconfig
+CONFIG_NET=y                # master switch
+CONFIG_NET_IPv4=y           # IPv4 support
+CONFIG_NET_IPv6=y           # IPv6 support
+CONFIG_NET_TCP=y            # TCP/IP
+CONFIG_NET_UDP=y            # UDP/IP
+CONFIG_NET_ICMP=y           # ICMPv4 (ping)
+CONFIG_NET_ICMPv6=y         # ICMPv6
+CONFIG_NET_IGMP=y           # IGMPv2 multicast
+CONFIG_NET_MLD=y            # MLDv1/v2 multicast (IPv6)
+CONFIG_NET_ARP=y            # ARP for IPv4
+CONFIG_NET_ETH_PKTSIZE=590  # MTU including Ethernet header
+```
+
+## BSD socket API
+
+NuttX implements the standard BSD socket interface. Code written for Linux or macOS networking will compile and run on NuttX with no changes.
+
+<Tabs>
+  <Tab title="TCP client">
+    ```c
+    #include <sys/socket.h>
+    #include <netinet/in.h>
+    #include <arpa/inet.h>
+    #include <unistd.h>
+
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+
+    struct sockaddr_in srv;
+    srv.sin_family      = AF_INET;
+    srv.sin_port        = htons(80);
+    inet_pton(AF_INET, "192.168.1.1", &srv.sin_addr);
+
+    connect(sock, (struct sockaddr *)&srv, sizeof(srv));
+
+    const char *req = "GET / HTTP/1.0\r\n\r\n";
+    send(sock, req, strlen(req), 0);
+
+    char buf[256];
+    ssize_t n = recv(sock, buf, sizeof(buf), 0);
+
+    close(sock);
+    ```
+  </Tab>
+
+  <Tab title="UDP server">
+    ```c
+    #include <sys/socket.h>
+    #include <netinet/in.h>
+
+    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+
+    struct sockaddr_in addr;
+    addr.sin_family      = AF_INET;
+    addr.sin_port        = htons(5000);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    bind(sock, (struct sockaddr *)&addr, sizeof(addr));
+
+    char buf[128];
+    struct sockaddr_in peer;
+    socklen_t plen = sizeof(peer);
+
+    ssize_t n = recvfrom(sock, buf, sizeof(buf), 0,
+                         (struct sockaddr *)&peer, &plen);
+    sendto(sock, buf, n, 0,
+           (struct sockaddr *)&peer, plen);
+
+    close(sock);
+    ```
+  </Tab>
+
+  <Tab title="Raw ICMP ping">
+    ```c
+    #include <sys/socket.h>
+    #include <netinet/in.h>
+
+    /* Raw ICMP socket — requires CONFIG_NET_ICMP_SOCKET=y */
+    int sock = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    ```
+  </Tab>
+</Tabs>
+
+## Supported protocols
+
+| Protocol | Address family / layer | Kconfig |
+|----------|----------------------|---------|
+| TCP | `AF_INET` / `AF_INET6` | `CONFIG_NET_TCP` |
+| UDP | `AF_INET` / `AF_INET6` | `CONFIG_NET_UDP` |
+| ICMPv4 | `AF_INET` | `CONFIG_NET_ICMP` |
+| ICMPv6 | `AF_INET6` | `CONFIG_NET_ICMPv6` |
+| IGMPv2 | `AF_INET` multicast | `CONFIG_NET_IGMP` |
+| MLDv1/v2 | `AF_INET6` multicast | `CONFIG_NET_MLD` |
+| ARP | Link layer | `CONFIG_NET_ARP` |
+| IEEE 802.15.4 | `AF_IEEE802154` | `CONFIG_NET_IEEE802154` |
+| Bluetooth LE | `AF_BLUETOOTH` | `CONFIG_NET_BLUETOOTH` |
+| Unix domain | `AF_LOCAL` | `CONFIG_NET_LOCAL` |
+| Netlink | `AF_NETLINK` | `CONFIG_NET_NETLINK` |
+
+## Network utilities
+
+<AccordionGroup>
+  <Accordion title="DHCP client and server">
+    The DHCP client (`net/` + `apps/netutils/dhcpc/`) automatically obtains an IP address, netmask, gateway, and DNS server from a DHCP server on the local segment.
+
+    ```kconfig
+    CONFIG_NETUTILS_DHCPC=y
+    CONFIG_NET_UDP=y
+    CONFIG_NET_BROADCAST=y
+    ```
+
+    From NuttShell: the `ifconfig` command shows assigned addresses, and `CONFIG_NSH_DHCPC=y` runs DHCP automatically at boot.
+  </Accordion>
+
+  <Accordion title="DNS resolver">
+    NuttX includes a DNS client (`net/` resolver + `apps/netutils/dnsclient/`) that resolves hostnames via the standard `getaddrinfo()` / `gethostbyname()` POSIX APIs.
+
+    ```kconfig
+    CONFIG_LIBC_NETDB=y
+    CONFIG_NETDB_DNSCLIENT=y
+    CONFIG_NETDB_DNSSERVER_IPv4ADDR=y
+    ```
+
+    ```c
+    #include <netdb.h>
+
+    struct addrinfo *res;
+    getaddrinfo("example.com", "80", NULL, &res);
+    freeaddrinfo(res);
+    ```
+  </Accordion>
+
+  <Accordion title="NTP client">
+    A simple NTP client synchronises the system clock with an NTP server over UDP port 123.
+
+    ```kconfig
+    CONFIG_NETUTILS_NTPCLIENT=y
+    CONFIG_NET_UDP=y
+    ```
+  </Accordion>
+
+  <Accordion title="HTTP server (thttpd)">
+    A port of Jeff Poskanzer's thttpd provides a small HTTP/1.1 server that integrates with the NuttX binary loader for embedded CGI.
+
+    ```kconfig
+    CONFIG_NETUTILS_THTTPD=y
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## IEEE 802.15.4 and 6LoWPAN
+
+NuttX treats IEEE 802.15.4 as a first-class radio network. MAC-layer packets are accessed through `AF_IEEE802154` raw sockets, and full IPv6 over low-power wireless (6LoWPAN, RFC 4944) is implemented in `net/sixlowpan/`.
+
+```kconfig
+CONFIG_NET_IEEE802154=y    # raw 802.15.4 socket support
+CONFIG_NET_6LOWPAN=y       # 6LoWPAN adaptation layer
+CONFIG_WIRELESS_IEEE802154=y
+```
+
+Bluetooth LE PAN connections use `AF_BLUETOOTH` sockets. The stack supports both L2CAP and RFCOMM profiles.
+
+```kconfig
+CONFIG_NET_BLUETOOTH=y
+CONFIG_WIRELESS_BLUETOOTH=y
+```
+
+## IP forwarding (routing)
+
+NuttX can forward packets between multiple network interfaces, acting as a minimal IP router.
+
+```kconfig
+CONFIG_NET_IPFORWARD=y
+CONFIG_NET_ROUTE=y          # kernel routing table
+```
+
+```c
+/* From NSH — add a static route */
+/* nsh> addroute 10.0.1.0/24 192.168.1.254 */
+```
+
+<CardGroup cols={2}>
+  <Card title="NuttShell networking commands" href="/components/nsh">
+    ifconfig, ifup, ifdown, ping, arp, addroute, nslookup.
+  </Card>
+  <Card title="Device driver framework" href="/components/drivers">
+    How network device drivers plug into the devif layer.
+  </Card>
+  <Card title="USB networking (RNDIS/CDC-ECM)" href="/guides/usb">
+    Use USB as a virtual Ethernet interface.
+  </Card>
+  <Card title="NuttX features overview" href="/introduction/features">
+    Full protocol and subsystem feature list.
+  </Card>
+</CardGroup>

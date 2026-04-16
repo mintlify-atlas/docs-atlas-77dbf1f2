@@ -1,97 +1,86 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "PX4 NuttX: Real-Time OS for Drone Autopilots"
+description: "PX4 NuttX is Apache NuttX extended with board support packages for Pixhawk, STM32F4/F7/H7, i.MX RT, and Kinetis drone autopilot hardware."
 ---
 
-## Setting up
+PX4 NuttX is a standards-compliant, deeply embedded real-time operating system built on Apache NuttX, extended with PX4-specific patches that target drone autopilot hardware including Pixhawk flight controllers, STM32F4/F7/H7, i.MX RT, and Kinetis microcontrollers. It provides a POSIX/ANSI-compatible OS environment with a highly configurable build system, comprehensive driver support, and deterministic real-time scheduling — all within a tiny footprint suitable for resource-constrained MCUs.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Overview" icon="circle-info" href="/introduction/overview">
+    Learn what NuttX is, its design philosophy, and how PX4 patches extend it for drone hardware.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Install & Build" icon="rocket" href="/quickstart/install">
+    Set up a development environment and build NuttX for your target board in minutes.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Supported Platforms" icon="microchip" href="/platforms/overview">
+    Explore supported MCU families including STM32, i.MX RT, Kinetis, and Pixhawk boards.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/reference/task-management">
+    Full reference for task management, POSIX APIs, memory management, and driver interfaces.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Get started quickly
 
-Everything you need to create world-class documentation.
+<Steps>
+  <Step title="Install build dependencies">
+    Install the toolchain and host tools required for your platform (Linux, macOS, or Windows/Cygwin).
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+    ```bash
+    sudo apt-get install gcc-arm-none-eabi make gperf flex bison libncurses-dev
+    ```
+  </Step>
+  <Step title="Clone and configure">
+    Clone the PX4 NuttX repository and configure for your target board using the configure script.
 
-## Need inspiration?
+    ```bash
+    git clone https://github.com/PX4/NuttX.git nuttx
+    cd nuttx
+    tools/configure.sh -l px4fmu-v5:nsh
+    ```
+  </Step>
+  <Step title="Build and flash">
+    Build the firmware and flash it to your hardware.
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+    ```bash
+    make
+    # Flash using OpenOCD, J-Link, or your board's bootloader
+    ```
+  </Step>
+  <Step title="Connect to NuttShell">
+    Open a serial terminal to the target's console and interact with NSH (NuttShell).
+
+    ```bash
+    # Connect at 57600 baud (or board default)
+    nsh> uname -a
+    NuttX 10.x.x ... arm ...
+    ```
+  </Step>
+</Steps>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Real-time scheduler" icon="clock" href="/components/scheduler">
+    Fully pre-emptible with fixed priority, round-robin, and sporadic scheduling policies.
+  </Card>
+  <Card title="Kernel & components" icon="cubes" href="/components/filesystem">
+    VFS, FAT/LittleFS/ROMFS filesystems, TCP/IP networking, USB host/device, and more.
+  </Card>
+  <Card title="NuttShell (NSH)" icon="terminal" href="/components/nsh">
+    A rich, bash-like interactive shell for debugging and controlling embedded targets.
+  </Card>
+  <Card title="Driver framework" icon="plug" href="/components/drivers">
+    Unified character and block driver architecture with I2C, SPI, CAN, serial, and USB support.
+  </Card>
+  <Card title="Porting guide" icon="wrench" href="/guides/porting">
+    Step-by-step guide to bringing up NuttX on a new board or MCU architecture.
+  </Card>
+  <Card title="PX4 patches" icon="drone" href="/introduction/px4-patches">
+    Overview of the PX4-specific changes on top of upstream Apache NuttX.
+  </Card>
+</CardGroup>
+
+<Note>
+  This documentation covers PX4 NuttX — the variant of Apache NuttX maintained by the PX4 project for use with Pixhawk and compatible flight controller hardware. For the upstream Apache NuttX project, see the [Apache NuttX documentation](https://nuttx.apache.org/docs/latest/).
+</Note>
